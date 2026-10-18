@@ -10,6 +10,8 @@ Search for **Notesheet** in the Ubuntu app launcher, or run:
 python3 /home/nehuen/Documents/Codex/2026-10-17/hey/outputs/notesheet.py ui
 ```
 
+The launcher uses the bundled `icons/notesheet.svg` icon and matches the app window by its `Notesheet` startup class.
+
 The left side lists every screenshot in `~/Pictures/NoteCaptures/Captures/`. Use the checkboxes to select up to three images. The selected order is their slot order. Click a selected row and use **Move up** or **Move down** to reorder it. **Move left** and **Move right** are grayed out until three images are selected; hover over them to see why. With three selected, they swap a left-column image with the rotated right-hand slot. To replace an image, uncheck it and check another. **Delete focused** removes the focused screenshot after confirmation; PDFs already created are kept.
 
 The right side updates an A4 landscape preview as the selection changes:

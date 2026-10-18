@@ -377,6 +377,8 @@ def run_ui() -> int:
     class NotesheetWindow(Gtk.Window):
         def __init__(self) -> None:
             super().__init__(title="Notesheet")
+            self.set_wmclass("notesheet", "Notesheet")
+            self.set_icon_name("notesheet")
             self.set_default_size(1120, 760)
             self.set_border_width(14)
             self.selected_paths: list[str] = []
