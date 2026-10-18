@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Capture full-screen notes and arrange every three on a landscape A4 sheet."""
+"""Capture full-screen notes and arrange up to three on landscape A4 sheets."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from PIL import Image
 
 
 APP_NAME = "Notesheet"
-PRINTER = "L395"
 SHORTCUT = "<Alt>Print"
 CUSTOM_PATH = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/notesheet/"
 MEDIA_KEYS_SCHEMA = "org.gnome.settings-daemon.plugins.media-keys"
@@ -200,7 +199,7 @@ def compose_page(image_paths: list[str], dpi: int = OUTPUT_DPI) -> Image.Image:
         elif len(sources) == 2:
             max_by_stack = (printable_h - GAP_MM) / (1 / aspects[0] + 1 / aspects[1])
             image_w_mm = min(TARGET_WIDTH_MM, printable_w, max_by_stack)
-        else:
+        elif len(sources) == 3:
             max_by_stack = (printable_h - GAP_MM) / (1 / aspects[0] + 1 / aspects[1])
             max_by_right_column = (printable_w - GAP_MM) / (1 + 1 / aspects[2])
             image_w_mm = min(TARGET_WIDTH_MM, max_by_stack, max_by_right_column, printable_h)
@@ -244,23 +243,69 @@ def compose_page(image_paths: list[str], dpi: int = OUTPUT_DPI) -> Image.Image:
             source.close()
 
 
-def create_sheet_pdf(image_paths: list[str]) -> Path:
+def create_sheet_pdf(
+    image_paths: list[str], output_path: Path | None = None
+) -> Path:
     page = compose_page(image_paths, OUTPUT_DPI)
-    SHEETS_DIR.mkdir(parents=True, exist_ok=True)
-    output = SHEETS_DIR / f"notesheet-{timestamp()}.pdf"
+    output = output_path or SHEETS_DIR / f"notesheet-{timestamp()}.pdf"
+    output.parent.mkdir(parents=True, exist_ok=True)
     page.save(output, "PDF", resolution=OUTPUT_DPI)
+    page.close()
     return output
 
 
-def submit_to_printer(pdf_path: Path) -> str:
+def query_printers() -> tuple[str | None, list[str]]:
+    """Return the CUPS default destination and available printer queues."""
+    env = os.environ.copy()
+    env["LC_ALL"] = "C"
+    default_result = subprocess.run(
+        ["lpstat", "-d"], capture_output=True, text=True, timeout=5, env=env
+    )
+    default_printer = None
+    for line in default_result.stdout.splitlines():
+        prefix = "system default destination:"
+        if line.lower().startswith(prefix):
+            default_printer = line.split(":", 1)[1].strip() or None
+            break
+
+    list_result = subprocess.run(
+        ["lpstat", "-e"], capture_output=True, text=True, timeout=5, env=env
+    )
+    if list_result.returncode != 0 and default_result.returncode != 0:
+        details = (list_result.stderr or default_result.stderr).strip()
+        raise RuntimeError(details or "Could not query CUPS printer queues.")
+    printers = {line.strip() for line in list_result.stdout.splitlines() if line.strip()}
+    if default_printer:
+        printers.add(default_printer)
+    return default_printer, sorted(printers, key=str.casefold)
+
+
+def submit_to_printer(pdf_path: Path, printer: str | None = None) -> str:
+    command = ["lp"]
+    if printer:
+        command.extend(["-d", printer])
+    command.extend(["-o", "media=A4", str(pdf_path)])
     result = subprocess.run(
-        ["lp", "-d", PRINTER, "-o", "media=A4", str(pdf_path)],
+        command,
         check=True,
         capture_output=True,
         text=True,
         timeout=30,
     )
-    return result.stdout.strip() or f"Sent to {PRINTER}."
+    return result.stdout.strip() or "Print job submitted to CUPS."
+
+
+def remember_sheet(pdf_path: Path, image_paths: list[str]) -> None:
+    state = load_state()
+    state["sheets"].append(
+        {
+            "pdf": str(pdf_path),
+            "images": image_paths,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "printed": False,
+        }
+    )
+    save_state(state)
 
 
 def mark_printed(pdf_path: Path) -> None:
@@ -393,13 +438,17 @@ def run_ui() -> int:
             move_row.pack_start(move_down, True, True, 0)
 
             side_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            self.side_button_row = side_row
             library.pack_start(side_row, False, False, 0)
             move_left = Gtk.Button(label="Move left")
             move_left.connect("clicked", lambda *_: self.move_side(-1))
+            self.move_left_button = move_left
             side_row.pack_start(move_left, True, True, 0)
             move_right = Gtk.Button(label="Move right")
             move_right.connect("clicked", lambda *_: self.move_side(1))
+            self.move_right_button = move_right
             side_row.pack_start(move_right, True, True, 0)
+            self.update_side_button_state()
 
             library_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             library.pack_start(library_actions, False, False, 0)
@@ -692,22 +741,15 @@ def run_ui() -> int:
 
         def move_side(self, direction: int) -> None:
             path_text = self.focus_path
-            if path_text not in self.selected_paths:
-                self.status_label.set_text("Select a checked screenshot before changing its slot.")
+            if len(self.selected_paths) != 3 or path_text not in self.selected_paths:
                 return
-            if len(self.selected_paths) < 3:
-                self.status_label.set_text("Select three screenshots to use the right-hand slot.")
-                return
-
             index = self.selected_paths.index(path_text)
             if direction > 0:
                 if index == 2:
-                    self.status_label.set_text("That screenshot is already in the right-hand slot.")
                     return
                 other = 2
             else:
                 if index < 2:
-                    self.status_label.set_text("That screenshot is already in the left column.")
                     return
                 other = 1
 
@@ -717,6 +759,18 @@ def run_ui() -> int:
             )
             self.update_slot_labels()
             self.update_preview()
+
+        def update_side_button_state(self) -> None:
+            enabled = len(self.selected_paths) == 3
+            explanation = (
+                "Swap this screenshot between the left column and the right-hand slot."
+                if enabled
+                else "Select three screenshots to use the right-hand slot."
+            )
+            for button in (self.move_left_button, self.move_right_button):
+                button.set_sensitive(enabled)
+                button.set_tooltip_text(explanation)
+            self.side_button_row.set_tooltip_text(explanation)
 
         def clear_selection(self, *_args) -> None:
             self.selected_paths = []
@@ -755,6 +809,7 @@ def run_ui() -> int:
 
         def update_preview(self) -> None:
             count = len(self.selected_paths)
+            self.update_side_button_state()
             self.print_button.set_sensitive(count > 0)
             self.print_button.set_label(f"Print selected ({count})")
             if count == 0:
@@ -794,38 +849,126 @@ def run_ui() -> int:
         def print_selected(self, *_args) -> None:
             if not self.selected_paths:
                 return
-            dialog = Gtk.MessageDialog(
+            selected = list(self.selected_paths)
+            printer_error = None
+            try:
+                default_printer, printers = query_printers()
+            except Exception as exc:
+                default_printer, printers = None, []
+                printer_error = str(exc)
+
+            dialog = Gtk.Dialog(
+                title="Print or save A4 sheet",
                 transient_for=self,
                 modal=True,
-                message_type=Gtk.MessageType.QUESTION,
-                buttons=Gtk.ButtonsType.CANCEL,
-                text=f"Print {len(self.selected_paths)} screenshot(s) on A4?",
             )
-            dialog.format_secondary_text(f"The job will be sent to {PRINTER}.")
-            dialog.add_button("Print", Gtk.ResponseType.YES)
+            dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+            dialog.add_button("Save PDF…", Gtk.ResponseType.APPLY)
+            print_button = dialog.add_button("Print", Gtk.ResponseType.ACCEPT)
+
+            content = dialog.get_content_area()
+            content.set_border_width(16)
+            content.set_spacing(10)
+            description = Gtk.Label(
+                label=f"{len(selected)} screenshot(s) are ready on an A4 landscape sheet."
+            )
+            description.set_xalign(0)
+            content.pack_start(description, False, False, 0)
+            destination_label = Gtk.Label(label="Printer destination")
+            destination_label.set_xalign(0)
+            content.pack_start(destination_label, False, False, 0)
+            printer_combo = Gtk.ComboBoxText()
+            destinations: list[tuple[str, str | None]] = []
+            if default_printer:
+                destinations.append(("default", None))
+                printer_combo.append("default", f"System default ({default_printer})")
+            for printer_name in printers:
+                if printer_name == default_printer:
+                    continue
+                destination_id = f"printer:{printer_name}"
+                destinations.append((destination_id, printer_name))
+                printer_combo.append(destination_id, printer_name)
+            if destinations:
+                printer_combo.set_active_id(destinations[0][0])
+            else:
+                printer_combo.set_sensitive(False)
+            content.pack_start(printer_combo, False, False, 0)
+            info_text = (
+                f"Printer list unavailable: {printer_error}. You can still save the PDF."
+                if printer_error
+                else "No CUPS printers are available. You can still save the PDF."
+                if not destinations
+                else "Choose the system default or another CUPS printer, or save a PDF."
+            )
+            info = Gtk.Label(label=info_text)
+            info.set_xalign(0)
+            info.set_line_wrap(True)
+            info.get_style_context().add_class("dim-label")
+            content.pack_start(info, False, False, 0)
+            print_button.set_sensitive(bool(destinations))
+            dialog.show_all()
             response = dialog.run()
+            destination_id = printer_combo.get_active_id()
             dialog.destroy()
-            if response != Gtk.ResponseType.YES:
+            if response == Gtk.ResponseType.APPLY:
+                self.save_pdf(selected)
+                return
+            if response != Gtk.ResponseType.ACCEPT:
                 return
 
-            selected = list(self.selected_paths)
             try:
                 pdf_path = create_sheet_pdf(selected)
-                state = load_state()
-                state["sheets"].append(
-                    {
-                        "pdf": str(pdf_path),
-                        "images": selected,
-                        "created_at": datetime.now().isoformat(timespec="seconds"),
-                        "printed": False,
-                    }
-                )
-                save_state(state)
-                job = submit_to_printer(pdf_path)
+                remember_sheet(pdf_path, selected)
+                printer = None
+                destination_name = f"system default ({default_printer})"
+                if destination_id != "default":
+                    printer = destination_id.removeprefix("printer:")
+                    destination_name = printer
+                job = submit_to_printer(pdf_path, printer)
                 mark_printed(pdf_path)
-                self.status_label.set_text(f"Sent to {PRINTER}: {job}")
+                self.status_label.set_text(f"Sent to {destination_name}: {job}")
             except Exception as exc:
                 self.show_error(f"Could not create or print the sheet: {exc}")
+
+        def choose_pdf_path(self) -> Path | None:
+            SHEETS_DIR.mkdir(parents=True, exist_ok=True)
+            dialog = Gtk.FileChooserDialog(
+                title="Save A4 sheet as PDF",
+                transient_for=self,
+                action=Gtk.FileChooserAction.SAVE,
+            )
+            dialog.add_buttons(
+                "Cancel", Gtk.ResponseType.CANCEL,
+                "Save PDF", Gtk.ResponseType.ACCEPT,
+            )
+            dialog.set_do_overwrite_confirmation(True)
+            dialog.set_current_folder(str(SHEETS_DIR))
+            dialog.set_current_name(f"notesheet-{timestamp()}.pdf")
+            pdf_filter = Gtk.FileFilter()
+            pdf_filter.set_name("PDF files")
+            pdf_filter.add_mime_type("application/pdf")
+            pdf_filter.add_pattern("*.pdf")
+            dialog.add_filter(pdf_filter)
+            response = dialog.run()
+            filename = dialog.get_filename() if response == Gtk.ResponseType.ACCEPT else None
+            dialog.destroy()
+            if not filename:
+                return None
+            output = Path(filename)
+            if output.suffix.lower() != ".pdf":
+                output = Path(f"{output}.pdf")
+            return output
+
+        def save_pdf(self, selected: list[str]) -> None:
+            output_path = self.choose_pdf_path()
+            if output_path is None:
+                return
+            try:
+                pdf_path = create_sheet_pdf(selected, output_path)
+                remember_sheet(pdf_path, selected)
+                self.status_label.set_text(f"Saved PDF: {pdf_path}")
+            except Exception as exc:
+                self.show_error(f"Could not save the PDF: {exc}")
 
         def show_error(self, message: str) -> None:
             dialog = Gtk.MessageDialog(

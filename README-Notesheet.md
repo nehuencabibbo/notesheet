@@ -1,6 +1,6 @@
 # Notesheet
 
-Notesheet captures full-screen images, lets you choose and order them, previews the A4 page, and prints the selection on the Epson L395.
+Notesheet captures full-screen images, lets you choose and order them, previews the A4 page, and prints through CUPS.
 
 ## Open the interface
 
@@ -10,7 +10,7 @@ Search for **Notesheet** in the Ubuntu app launcher, or run:
 python3 /home/nehuen/Documents/Codex/2026-10-17/hey/outputs/notesheet.py ui
 ```
 
-The left side lists every screenshot in `~/Pictures/NoteCaptures/Captures/`. Use the checkboxes to select up to three images. The selected order is their slot order. Click a selected row and use **Move up** or **Move down** to reorder it. With three selected, **Move right** swaps a left-column image into the rotated right-hand slot; **Move left** swaps that image back into the lower-left slot. To replace an image, uncheck it and check another. **Delete focused** removes the focused screenshot after confirmation; PDFs already created are kept.
+The left side lists every screenshot in `~/Pictures/NoteCaptures/Captures/`. Use the checkboxes to select up to three images. The selected order is their slot order. Click a selected row and use **Move up** or **Move down** to reorder it. **Move left** and **Move right** are grayed out until three images are selected; hover over them to see why. With three selected, they swap a left-column image with the rotated right-hand slot. To replace an image, uncheck it and check another. **Delete focused** removes the focused screenshot after confirmation; PDFs already created are kept.
 
 The right side updates an A4 landscape preview as the selection changes:
 
@@ -18,7 +18,7 @@ The right side updates an A4 landscape preview as the selection changes:
 - Two screenshots are upright, stacked on the left.
 - Three screenshots use the two-left, one-rotated-right layout.
 
-Click **Print selected** to save the sheet PDF in `~/Pictures/NoteCaptures/Sheets/` and send it to the L395. You can print one or two shots; the unused page area stays blank. Screenshots remain in the library after printing.
+Click **Print selected** to choose a destination. **System default** uses the printer configured as the CUPS default; other available queues are listed by name. **Save PDF…** opens a file chooser so the sheet can be saved anywhere without printing. Printed PDFs are also kept in `~/Pictures/NoteCaptures/Sheets/`. You can print one or two shots; the unused page area stays blank. Screenshots remain in the library after printing.
 
 ## Capture
 
@@ -35,7 +35,7 @@ python3 /home/nehuen/Documents/Codex/2026-10-17/hey/outputs/notesheet.py open-la
 python3 /home/nehuen/Documents/Codex/2026-10-17/hey/outputs/notesheet.py print-latest
 ```
 
-`status` lists the screenshot count and latest sheet. `open-latest` opens the latest PDF. `print-latest` sends it to the L395. To restore GNOME's previous Alt+Print window-screenshot shortcut, run:
+`status` lists the screenshot count and latest sheet. `open-latest` opens the latest PDF. `print-latest` sends it to the system default CUPS printer. To list available printers and inspect the default, use `lpstat -e` and `lpstat -d`. To restore GNOME's previous Alt+Print window-screenshot shortcut, run:
 
 ```bash
 python3 /home/nehuen/Documents/Codex/2026-10-17/hey/outputs/notesheet.py remove-shortcut
