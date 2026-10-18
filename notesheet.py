@@ -367,9 +367,10 @@ def run_ui() -> int:
     try:
         import gi
 
+        gi.require_version("Gdk", "3.0")
         gi.require_version("Gtk", "3.0")
         gi.require_version("GdkPixbuf", "2.0")
-        from gi.repository import GdkPixbuf, GLib, Gtk
+        from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
     except Exception as exc:
         print(f"Could not load the Notesheet interface: {exc}", file=sys.stderr)
         return 1
@@ -440,16 +441,33 @@ def run_ui() -> int:
             move_row.pack_start(move_down, True, True, 0)
 
             side_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            self.side_button_row = side_row
             library.pack_start(side_row, False, False, 0)
             move_left = Gtk.Button(label="Move left")
             move_left.connect("clicked", lambda *_: self.move_side(-1))
             self.move_left_button = move_left
-            side_row.pack_start(move_left, True, True, 0)
+            self.move_left_hover = Gtk.EventBox()
+            self.move_left_hover.set_visible_window(False)
+            self.move_left_hover.set_above_child(True)
+            self.move_left_hover.add_events(
+                Gdk.EventMask.POINTER_MOTION_MASK
+                | Gdk.EventMask.ENTER_NOTIFY_MASK
+                | Gdk.EventMask.LEAVE_NOTIFY_MASK
+            )
+            self.move_left_hover.add(move_left)
+            side_row.pack_start(self.move_left_hover, True, True, 0)
             move_right = Gtk.Button(label="Move right")
             move_right.connect("clicked", lambda *_: self.move_side(1))
             self.move_right_button = move_right
-            side_row.pack_start(move_right, True, True, 0)
+            self.move_right_hover = Gtk.EventBox()
+            self.move_right_hover.set_visible_window(False)
+            self.move_right_hover.set_above_child(True)
+            self.move_right_hover.add_events(
+                Gdk.EventMask.POINTER_MOTION_MASK
+                | Gdk.EventMask.ENTER_NOTIFY_MASK
+                | Gdk.EventMask.LEAVE_NOTIFY_MASK
+            )
+            self.move_right_hover.add(move_right)
+            side_row.pack_start(self.move_right_hover, True, True, 0)
             self.update_side_button_state()
 
             library_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -771,8 +789,9 @@ def run_ui() -> int:
             )
             for button in (self.move_left_button, self.move_right_button):
                 button.set_sensitive(enabled)
-                button.set_tooltip_text(explanation)
-            self.side_button_row.set_tooltip_text(explanation)
+            for wrapper in (self.move_left_hover, self.move_right_hover):
+                wrapper.set_above_child(not enabled)
+                wrapper.set_tooltip_text(None if enabled else explanation)
 
         def clear_selection(self, *_args) -> None:
             self.selected_paths = []
