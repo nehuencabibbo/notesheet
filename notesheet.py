@@ -1,0 +1,948 @@
+#!/usr/bin/python3
+"""Capture full-screen notes and arrange every three on a landscape A4 sheet."""
+
+from __future__ import annotations
+
+import argparse
+import io
+import json
+import os
+import shlex
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+from PIL import Image
+
+
+APP_NAME = "Notesheet"
+PRINTER = "L395"
+SHORTCUT = "<Alt>Print"
+CUSTOM_PATH = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/notesheet/"
+MEDIA_KEYS_SCHEMA = "org.gnome.settings-daemon.plugins.media-keys"
+CUSTOM_SCHEMA = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding"
+SHELL_KEYS_SCHEMA = "org.gnome.shell.keybindings"
+
+# Physical page geometry. The third screenshot is turned 90 degrees counterclockwise.
+A4_WIDTH_MM = 297.0
+A4_HEIGHT_MM = 210.0
+PAGE_MARGIN_MM = 5.0
+GAP_MM = 2.0
+TARGET_WIDTH_MM = 180.0
+OUTPUT_DPI = 300
+
+
+def pictures_dir() -> Path:
+    """Use the XDG Pictures location when available, with a safe default."""
+    try:
+        result = subprocess.run(
+            ["xdg-user-dir", "PICTURES"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        candidate = Path(result.stdout.strip()).expanduser()
+        if candidate.is_absolute():
+            return candidate
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return Path.home() / "Pictures"
+
+
+ROOT = pictures_dir() / "NoteCaptures"
+CAPTURES_DIR = ROOT / "Captures"
+SHEETS_DIR = ROOT / "Sheets"
+STATE_PATH = ROOT / ".notesheet-state.json"
+
+
+def timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+
+
+def load_state() -> dict:
+    if not STATE_PATH.exists():
+        return {"pending": [], "sheets": []}
+    try:
+        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("state is not an object")
+        data.setdefault("pending", [])
+        data.setdefault("sheets", [])
+        return data
+    except (OSError, ValueError, json.JSONDecodeError):
+        raise RuntimeError(
+            f"Could not read {STATE_PATH}. Move it aside and try again."
+        )
+
+
+def save_state(state: dict) -> None:
+    ROOT.mkdir(parents=True, exist_ok=True)
+    temp_path = STATE_PATH.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    os.replace(temp_path, STATE_PATH)
+
+
+def notify(title: str, body: str) -> None:
+    try:
+        subprocess.run(
+            ["notify-send", title, body],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def dialog_error(message: str) -> None:
+    try:
+        subprocess.run(
+            ["zenity", "--error", "--title", APP_NAME, "--text", message],
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        print(f"{APP_NAME}: {message}", file=sys.stderr)
+
+
+def get_shortcut_binding() -> str:
+    import gi
+
+    gi.require_version("Gio", "2.0")
+    from gi.repository import Gio
+
+    return Gio.Settings.new_with_path(CUSTOM_SCHEMA, CUSTOM_PATH).get_string("binding")
+
+
+def format_shortcut(binding: str) -> str:
+    if not binding:
+        return "Disabled"
+    readable = binding
+    for token, label in (
+        ("<Control>", "Ctrl+"),
+        ("<Ctrl>", "Ctrl+"),
+        ("<Alt>", "Alt+"),
+        ("<Shift>", "Shift+"),
+        ("<Super>", "Super+"),
+    ):
+        readable = readable.replace(token, label)
+    return readable
+
+
+def set_shortcut_binding(binding: str) -> None:
+    import gi
+
+    gi.require_version("Gio", "2.0")
+    from gi.repository import Gio
+
+    state = load_state()
+    restore = state.get("shortcut_backup", [SHORTCUT])
+    shell_keys = Gio.Settings.new(SHELL_KEYS_SCHEMA)
+    shell_keys.set_strv("screenshot-window", [key for key in restore if key != binding])
+
+    media_keys = Gio.Settings.new(MEDIA_KEYS_SCHEMA)
+    custom = Gio.Settings.new_with_path(CUSTOM_SCHEMA, CUSTOM_PATH)
+    custom.set_string("name", "Notesheet full-screen capture")
+    custom.set_string(
+        "command",
+        shlex.join([sys.executable, str(Path(__file__).resolve()), "capture"]),
+    )
+    custom.set_string("binding", binding)
+    paths = media_keys.get_strv("custom-keybindings")
+    if CUSTOM_PATH not in paths:
+        media_keys.set_strv("custom-keybindings", paths + [CUSTOM_PATH])
+
+
+def capture_full_screen() -> Path:
+    """Capture the X11 desktop root window through GNOME's GDK bindings."""
+    try:
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("Gdk", "3.0")
+        from gi.repository import Gdk, Gtk
+
+        Gtk.init([])
+        display = Gdk.Display.get_default()
+        if display is None:
+            raise RuntimeError("No graphical display is available.")
+        screen = display.get_default_screen()
+        root_window = screen.get_root_window()
+        if root_window is None:
+            raise RuntimeError("Could not access the desktop screenshot surface.")
+        width = root_window.get_width()
+        height = root_window.get_height()
+        pixbuf = Gdk.pixbuf_get_from_window(root_window, 0, 0, width, height)
+        if pixbuf is None:
+            raise RuntimeError("The desktop did not provide a screenshot image.")
+        CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
+        output = CAPTURES_DIR / f"screen-{timestamp()}.png"
+        pixbuf.savev(str(output), "png", [], [])
+        return output
+    except Exception as exc:
+        raise RuntimeError(f"Screenshot capture failed: {exc}") from exc
+
+
+def compose_page(image_paths: list[str], dpi: int = OUTPUT_DPI) -> Image.Image:
+    """Render one to three shots on the same A4 layout used by the preview."""
+    if not 1 <= len(image_paths) <= 3:
+        raise ValueError("Choose between one and three screenshots.")
+    sources = [Image.open(path).convert("RGB") for path in image_paths]
+    try:
+        aspects = [source.width / source.height for source in sources]
+        printable_w = A4_WIDTH_MM - 2 * PAGE_MARGIN_MM
+        printable_h = A4_HEIGHT_MM - 2 * PAGE_MARGIN_MM
+        if len(sources) == 1:
+            image_w_mm = min(TARGET_WIDTH_MM, printable_w, printable_h * aspects[0])
+        elif len(sources) == 2:
+            max_by_stack = (printable_h - GAP_MM) / (1 / aspects[0] + 1 / aspects[1])
+            image_w_mm = min(TARGET_WIDTH_MM, printable_w, max_by_stack)
+        else:
+            max_by_stack = (printable_h - GAP_MM) / (1 / aspects[0] + 1 / aspects[1])
+            max_by_right_column = (printable_w - GAP_MM) / (1 + 1 / aspects[2])
+            image_w_mm = min(TARGET_WIDTH_MM, max_by_stack, max_by_right_column, printable_h)
+
+        px_per_mm = dpi / 25.4
+        page_w = round(A4_WIDTH_MM * px_per_mm)
+        page_h = round(A4_HEIGHT_MM * px_per_mm)
+        margin = round(PAGE_MARGIN_MM * px_per_mm)
+        gap = round(GAP_MM * px_per_mm)
+        image_w = round(image_w_mm * px_per_mm)
+        image_heights = [round((image_w_mm / aspect) * px_per_mm) for aspect in aspects]
+
+        page = Image.new("RGB", (page_w, page_h), "white")
+        if len(sources) == 1:
+            x = (page_w - image_w) // 2
+            y = (page_h - image_heights[0]) // 2
+            resized = sources[0].resize(
+                (image_w, image_heights[0]), Image.Resampling.LANCZOS
+            )
+            page.paste(resized, (x, y))
+        else:
+            stack_height = sum(image_heights[:2]) + gap
+            first_y = margin + (page_h - 2 * margin - stack_height) // 2
+            left_positions = ((0, first_y), (1, first_y + image_heights[0] + gap))
+            for index, y in left_positions:
+                resized = sources[index].resize(
+                    (image_w, image_heights[index]), Image.Resampling.LANCZOS
+                )
+                page.paste(resized, (margin, y))
+
+            if len(sources) == 3:
+                turned = sources[2].resize(
+                    (image_w, image_heights[2]), Image.Resampling.LANCZOS
+                ).rotate(90, expand=True)
+                right_x = margin + image_w + gap
+                right_y = (page_h - turned.height) // 2
+                page.paste(turned, (right_x, right_y))
+        return page
+    finally:
+        for source in sources:
+            source.close()
+
+
+def create_sheet_pdf(image_paths: list[str]) -> Path:
+    page = compose_page(image_paths, OUTPUT_DPI)
+    SHEETS_DIR.mkdir(parents=True, exist_ok=True)
+    output = SHEETS_DIR / f"notesheet-{timestamp()}.pdf"
+    page.save(output, "PDF", resolution=OUTPUT_DPI)
+    return output
+
+
+def submit_to_printer(pdf_path: Path) -> str:
+    result = subprocess.run(
+        ["lp", "-d", PRINTER, "-o", "media=A4", str(pdf_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.stdout.strip() or f"Sent to {PRINTER}."
+
+
+def mark_printed(pdf_path: Path) -> None:
+    state = load_state()
+    for sheet in state.get("sheets", []):
+        if sheet.get("pdf") == str(pdf_path):
+            sheet["printed"] = True
+            sheet["printed_at"] = datetime.now().isoformat(timespec="seconds")
+            break
+    save_state(state)
+
+
+def capture() -> int:
+    try:
+        shot = capture_full_screen()
+        notify("Screenshot saved", f"Open Notesheet to choose shots and print.\n{shot}")
+        return 0
+    except Exception as exc:
+        dialog_error(str(exc))
+        return 1
+
+
+def latest_sheet(state: dict) -> Path | None:
+    for sheet in reversed(state.get("sheets", [])):
+        candidate = Path(sheet.get("pdf", ""))
+        if candidate.is_file():
+            return candidate
+    if SHEETS_DIR.exists():
+        candidates = sorted(SHEETS_DIR.glob("notesheet-*.pdf"), key=lambda p: p.stat().st_mtime)
+        if candidates:
+            return candidates[-1]
+    return None
+
+
+def print_latest() -> int:
+    pdf_path = latest_sheet(load_state())
+    if pdf_path is None:
+        print("No Notesheet PDF exists yet. Select one or more screenshots in Notesheet.", file=sys.stderr)
+        return 1
+    try:
+        print(submit_to_printer(pdf_path))
+        mark_printed(pdf_path)
+        return 0
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"Could not print {pdf_path}: {exc}", file=sys.stderr)
+        return 1
+
+
+def open_latest() -> int:
+    pdf_path = latest_sheet(load_state())
+    if pdf_path is None:
+        print("No Notesheet PDF exists yet. Select one or more screenshots in Notesheet.", file=sys.stderr)
+        return 1
+    subprocess.Popen(["xdg-open", str(pdf_path)])
+    return 0
+
+
+def run_ui() -> int:
+    try:
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("GdkPixbuf", "2.0")
+        from gi.repository import GdkPixbuf, GLib, Gtk
+    except Exception as exc:
+        print(f"Could not load the Notesheet interface: {exc}", file=sys.stderr)
+        return 1
+
+    class NotesheetWindow(Gtk.Window):
+        def __init__(self) -> None:
+            super().__init__(title="Notesheet")
+            self.set_default_size(1120, 760)
+            self.set_border_width(14)
+            self.selected_paths: list[str] = []
+            self.focus_path: str | None = None
+            self.checks: dict[str, Gtk.CheckButton] = {}
+            self.name_labels: dict[str, Gtk.Label] = {}
+            self.row_paths: dict[Gtk.ListBoxRow, str] = {}
+            self.inventory: tuple = ()
+            self.rebuilding = False
+
+            outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            self.add(outer)
+
+            heading = Gtk.Label()
+            heading.set_markup("<span size='x-large' weight='bold'>Notesheet</span>\nChoose one to three captures, then print an A4 preview.")
+            heading.set_xalign(0)
+            outer.pack_start(heading, False, False, 0)
+
+            toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            outer.pack_start(toolbar, False, False, 0)
+            refresh_button = Gtk.Button(label="Refresh")
+            refresh_button.connect("clicked", lambda *_: self.refresh_library(force=True))
+            toolbar.pack_start(refresh_button, False, False, 0)
+            self.shortcut_label = Gtk.Label()
+            self.update_shortcut_label()
+            toolbar.pack_start(self.shortcut_label, False, False, 0)
+            shortcut_button = Gtk.Button(label="Change…")
+            shortcut_button.connect("clicked", self.change_shortcut)
+            toolbar.pack_start(shortcut_button, False, False, 0)
+            folder_button = Gtk.Button(label="Open capture folder")
+            folder_button.connect("clicked", lambda *_: subprocess.Popen(["xdg-open", str(CAPTURES_DIR)]))
+            toolbar.pack_end(folder_button, False, False, 0)
+
+            content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+            outer.pack_start(content, True, True, 0)
+
+            library = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            library.set_size_request(385, -1)
+            content.pack_start(library, False, True, 0)
+            library_title = Gtk.Label(label="Saved screenshots")
+            library_title.set_xalign(0)
+            library.pack_start(library_title, False, False, 0)
+
+            self.listbox = Gtk.ListBox()
+            self.listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+            self.listbox.connect("row-selected", self.on_row_selected)
+            scroll = Gtk.ScrolledWindow()
+            scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroll.add(self.listbox)
+            library.pack_start(scroll, True, True, 0)
+
+            move_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            library.pack_start(move_row, False, False, 0)
+            move_up = Gtk.Button(label="Move up")
+            move_up.connect("clicked", lambda *_: self.move_selected(-1))
+            move_row.pack_start(move_up, True, True, 0)
+            move_down = Gtk.Button(label="Move down")
+            move_down.connect("clicked", lambda *_: self.move_selected(1))
+            move_row.pack_start(move_down, True, True, 0)
+
+            side_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            library.pack_start(side_row, False, False, 0)
+            move_left = Gtk.Button(label="Move left")
+            move_left.connect("clicked", lambda *_: self.move_side(-1))
+            side_row.pack_start(move_left, True, True, 0)
+            move_right = Gtk.Button(label="Move right")
+            move_right.connect("clicked", lambda *_: self.move_side(1))
+            side_row.pack_start(move_right, True, True, 0)
+
+            library_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            library.pack_start(library_actions, False, False, 0)
+            clear_button = Gtk.Button(label="Clear selection")
+            clear_button.connect("clicked", self.clear_selection)
+            library_actions.pack_start(clear_button, True, True, 0)
+            delete_button = Gtk.Button(label="Delete focused")
+            delete_button.connect("clicked", self.delete_focused)
+            library_actions.pack_start(delete_button, True, True, 0)
+
+            preview_column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            content.pack_start(preview_column, True, True, 0)
+            self.preview_title = Gtk.Label(label="A4 landscape preview")
+            self.preview_title.set_xalign(0)
+            preview_column.pack_start(self.preview_title, False, False, 0)
+            preview_frame = Gtk.Frame()
+            preview_frame.set_shadow_type(Gtk.ShadowType.IN)
+            preview_column.pack_start(preview_frame, True, True, 0)
+            self.preview_image = Gtk.Image()
+            self.preview_image.set_from_icon_name("image-x-generic", Gtk.IconSize.DIALOG)
+            preview_frame.add(self.preview_image)
+
+            self.layout_label = Gtk.Label(label="Select screenshots to see their paper layout.")
+            self.layout_label.set_xalign(0)
+            preview_column.pack_start(self.layout_label, False, False, 0)
+            preview_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            preview_column.pack_start(preview_actions, False, False, 0)
+            self.print_button = Gtk.Button(label="Print selected")
+            self.print_button.get_style_context().add_class("suggested-action")
+            self.print_button.set_sensitive(False)
+            self.print_button.connect("clicked", self.print_selected)
+            preview_actions.pack_end(self.print_button, False, False, 0)
+
+            self.status_label = Gtk.Label()
+            self.status_label.set_xalign(0)
+            outer.pack_start(self.status_label, False, False, 0)
+            self.update_shortcut_status()
+
+            self.connect("destroy", lambda *_args: Gtk.main_quit())
+            self.refresh_library(force=True)
+            GLib.timeout_add_seconds(2, self.periodic_refresh)
+            self.show_all()
+            self.update_preview()
+
+        def list_capture_paths(self) -> list[Path]:
+            if not CAPTURES_DIR.exists():
+                return []
+            return sorted(
+                CAPTURES_DIR.glob("screen-*.png"),
+                key=lambda path: path.stat().st_mtime_ns,
+                reverse=True,
+            )
+
+        def inventory_key(self, paths: list[Path]) -> tuple:
+            return tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in paths)
+
+        def periodic_refresh(self) -> bool:
+            self.refresh_library()
+            return True
+
+        def refresh_library(self, force: bool = False) -> None:
+            paths = self.list_capture_paths()
+            current_inventory = self.inventory_key(paths)
+            if not force and current_inventory == self.inventory:
+                return
+            self.inventory = current_inventory
+            valid = {str(path) for path in paths}
+            self.selected_paths = [path for path in self.selected_paths if path in valid]
+            if self.focus_path not in valid:
+                self.focus_path = None
+
+            self.rebuilding = True
+            for child in self.listbox.get_children():
+                self.listbox.remove(child)
+            self.checks.clear()
+            self.name_labels.clear()
+            self.row_paths.clear()
+
+            for path in paths:
+                path_text = str(path)
+                row = Gtk.ListBoxRow()
+                row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
+                row_box.set_border_width(6)
+                row.add(row_box)
+                check = Gtk.CheckButton()
+                check.set_active(path_text in self.selected_paths)
+                check.connect("toggled", self.on_toggled, path_text)
+                row_box.pack_start(check, False, False, 0)
+                self.checks[path_text] = check
+
+                try:
+                    thumbnail = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                        path_text, 128, 76, True
+                    )
+                    image = Gtk.Image.new_from_pixbuf(thumbnail)
+                except Exception:
+                    image = Gtk.Image.new_from_icon_name("image-x-generic", Gtk.IconSize.DIALOG)
+                row_box.pack_start(image, False, False, 0)
+
+                text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+                row_box.pack_start(text_box, True, True, 0)
+                name = Gtk.Label(label=path.name)
+                name.set_xalign(0)
+                text_box.pack_start(name, False, False, 0)
+                self.name_labels[path_text] = name
+                try:
+                    with Image.open(path) as shot:
+                        detail = f"{shot.width} × {shot.height} px"
+                except Exception:
+                    detail = "Image unavailable"
+                details = Gtk.Label(label=detail)
+                details.set_xalign(0)
+                details.get_style_context().add_class("dim-label")
+                text_box.pack_start(details, False, False, 0)
+
+                self.row_paths[row] = path_text
+                self.listbox.add(row)
+
+            self.rebuilding = False
+            self.listbox.show_all()
+            self.update_slot_labels()
+            if self.focus_path:
+                for row, path_text in self.row_paths.items():
+                    if path_text == self.focus_path:
+                        self.listbox.select_row(row)
+                        break
+            self.update_preview()
+
+        def on_row_selected(self, _listbox, row) -> None:
+            self.focus_path = self.row_paths.get(row) if row else None
+
+        def on_toggled(self, button, path_text: str) -> None:
+            if self.rebuilding:
+                return
+            self.focus_path = path_text
+            if button.get_active():
+                if path_text not in self.selected_paths:
+                    if len(self.selected_paths) >= 3:
+                        self.rebuilding = True
+                        button.set_active(False)
+                        self.rebuilding = False
+                        self.status_label.set_text("A sheet holds up to three screenshots.")
+                        return
+                    self.selected_paths.append(path_text)
+            elif path_text in self.selected_paths:
+                self.selected_paths.remove(path_text)
+            self.update_slot_labels()
+            self.update_preview()
+
+        def update_shortcut_label(self) -> None:
+            try:
+                binding = get_shortcut_binding()
+                self.shortcut_label.set_text(f"Capture shortcut: {format_shortcut(binding)}")
+            except Exception:
+                self.shortcut_label.set_text("Capture shortcut: unavailable")
+
+        def update_shortcut_status(self) -> None:
+            try:
+                shortcut = format_shortcut(get_shortcut_binding())
+            except Exception:
+                shortcut = "the capture shortcut"
+            if shortcut == "Disabled":
+                self.status_label.set_text("Capture shortcut is disabled. Select up to three saved screenshots here.")
+            else:
+                self.status_label.set_text(f"{shortcut} captures a full screen. Select up to three shots here.")
+
+        def change_shortcut(self, *_args) -> None:
+            try:
+                old_binding = get_shortcut_binding()
+                # Disable the global accelerator while this window listens for a new chord.
+                import gi
+
+                gi.require_version("Gio", "2.0")
+                from gi.repository import Gio
+
+                Gio.Settings.new_with_path(CUSTOM_SCHEMA, CUSTOM_PATH).set_string(
+                    "binding", ""
+                )
+            except Exception as exc:
+                self.show_error(f"Could not temporarily disable the capture shortcut: {exc}")
+                return
+
+            from gi.repository import Gdk
+
+            dialog = Gtk.Dialog(
+                title="Change capture shortcut",
+                transient_for=self,
+                modal=True,
+            )
+            dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+            accept_button = dialog.add_button("Use shortcut", Gtk.ResponseType.ACCEPT)
+            accept_button.set_sensitive(False)
+            dialog.set_default_size(390, 150)
+
+            content = dialog.get_content_area()
+            content.set_border_width(18)
+            content.set_spacing(10)
+            instruction = Gtk.Label(
+                label="Press the key combination to capture a full screen.\nInclude a modifier such as Ctrl, Alt, Shift, or Super. Escape cancels."
+            )
+            instruction.set_line_wrap(True)
+            content.pack_start(instruction, False, False, 0)
+            captured_label = Gtk.Label(label="Waiting for a shortcut…")
+            captured_label.get_style_context().add_class("title-3")
+            capture_area = Gtk.EventBox()
+            capture_area.set_can_focus(True)
+            capture_area.add_events(Gdk.EventMask.KEY_PRESS_MASK)
+            capture_area.add(captured_label)
+            content.pack_start(capture_area, False, False, 0)
+
+            chosen = {"binding": None}
+            modifier_keys = {
+                Gdk.KEY_Shift_L, Gdk.KEY_Shift_R,
+                Gdk.KEY_Control_L, Gdk.KEY_Control_R,
+                Gdk.KEY_Meta_L, Gdk.KEY_Meta_R,
+                Gdk.KEY_Alt_L, Gdk.KEY_Alt_R,
+                Gdk.KEY_Super_L, Gdk.KEY_Super_R,
+                Gdk.KEY_Hyper_L, Gdk.KEY_Hyper_R,
+            }
+
+            def on_key_press(_widget, event) -> bool:
+                if event.keyval == Gdk.KEY_Escape:
+                    dialog.response(Gtk.ResponseType.CANCEL)
+                    return True
+                if event.keyval in modifier_keys:
+                    return True
+                modifiers = event.state & Gtk.accelerator_get_default_mod_mask()
+                if not modifiers:
+                    chosen["binding"] = None
+                    captured_label.set_text("Add a modifier key")
+                    accept_button.set_sensitive(False)
+                    return True
+                keyval = Gdk.keyval_to_lower(event.keyval)
+                if not Gtk.accelerator_valid(keyval, modifiers):
+                    chosen["binding"] = None
+                    captured_label.set_text("That key combination cannot be used")
+                    accept_button.set_sensitive(False)
+                    return True
+                chosen["binding"] = Gtk.accelerator_name(keyval, modifiers)
+                captured_label.set_text(Gtk.accelerator_get_label(keyval, modifiers))
+                accept_button.set_sensitive(True)
+                return True
+
+            capture_area.connect("key-press-event", on_key_press)
+            dialog.show_all()
+            capture_area.grab_focus()
+
+            committed = False
+            error = None
+            try:
+                response = dialog.run()
+                if response == Gtk.ResponseType.ACCEPT and chosen["binding"]:
+                    set_shortcut_binding(chosen["binding"])
+                    committed = True
+            except Exception as exc:
+                error = str(exc)
+            finally:
+                if not committed:
+                    try:
+                        set_shortcut_binding(old_binding)
+                    except Exception as exc:
+                        error = error or f"Could not restore the previous shortcut: {exc}"
+                dialog.destroy()
+
+            if error:
+                self.show_error(f"Could not change the capture shortcut: {error}")
+                return
+            self.update_shortcut_label()
+            self.update_shortcut_status()
+            if committed:
+                self.status_label.set_text(
+                    f"Capture shortcut changed to {format_shortcut(chosen['binding'])}."
+                )
+
+        def move_selected(self, direction: int) -> None:
+            path_text = self.focus_path
+            if path_text not in self.selected_paths:
+                self.status_label.set_text("Select a checked screenshot before changing its slot.")
+                return
+            index = self.selected_paths.index(path_text)
+            other = index + direction
+            if not 0 <= other < len(self.selected_paths):
+                return
+            self.selected_paths[index], self.selected_paths[other] = (
+                self.selected_paths[other],
+                self.selected_paths[index],
+            )
+            self.update_slot_labels()
+            self.update_preview()
+
+        def move_side(self, direction: int) -> None:
+            path_text = self.focus_path
+            if path_text not in self.selected_paths:
+                self.status_label.set_text("Select a checked screenshot before changing its slot.")
+                return
+            if len(self.selected_paths) < 3:
+                self.status_label.set_text("Select three screenshots to use the right-hand slot.")
+                return
+
+            index = self.selected_paths.index(path_text)
+            if direction > 0:
+                if index == 2:
+                    self.status_label.set_text("That screenshot is already in the right-hand slot.")
+                    return
+                other = 2
+            else:
+                if index < 2:
+                    self.status_label.set_text("That screenshot is already in the left column.")
+                    return
+                other = 1
+
+            self.selected_paths[index], self.selected_paths[other] = (
+                self.selected_paths[other],
+                self.selected_paths[index],
+            )
+            self.update_slot_labels()
+            self.update_preview()
+
+        def clear_selection(self, *_args) -> None:
+            self.selected_paths = []
+            self.refresh_library(force=True)
+            self.status_label.set_text("Selection cleared. Your screenshot files are still saved.")
+
+        def delete_focused(self, *_args) -> None:
+            path_text = self.focus_path
+            if not path_text or not Path(path_text).is_file():
+                self.status_label.set_text("Select a screenshot row first.")
+                return
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.QUESTION,
+                buttons=Gtk.ButtonsType.CANCEL,
+                text="Delete this screenshot?",
+            )
+            dialog.format_secondary_text(Path(path_text).name)
+            dialog.add_button("Delete", Gtk.ResponseType.YES)
+            response = dialog.run()
+            dialog.destroy()
+            if response != Gtk.ResponseType.YES:
+                return
+            try:
+                Path(path_text).unlink()
+                self.selected_paths = [p for p in self.selected_paths if p != path_text]
+                state = load_state()
+                state["pending"] = [p for p in state.get("pending", []) if p != path_text]
+                save_state(state)
+                self.focus_path = None
+                self.refresh_library(force=True)
+                self.status_label.set_text("Screenshot deleted. Existing PDFs are unchanged.")
+            except OSError as exc:
+                self.show_error(f"Could not delete the screenshot: {exc}")
+
+        def update_preview(self) -> None:
+            count = len(self.selected_paths)
+            self.print_button.set_sensitive(count > 0)
+            self.print_button.set_label(f"Print selected ({count})")
+            if count == 0:
+                self.preview_image.set_from_icon_name("image-x-generic", Gtk.IconSize.DIALOG)
+                self.layout_label.set_text("Select one to three screenshots to preview the A4 sheet.")
+                return
+            try:
+                page = compose_page(self.selected_paths, dpi=90)
+                buffer = io.BytesIO()
+                page.save(buffer, format="PNG")
+                page.close()
+                loader = GdkPixbuf.PixbufLoader.new_with_type("png")
+                loader.write(buffer.getvalue())
+                loader.close()
+                pixbuf = loader.get_pixbuf()
+                scaled = pixbuf.scale_simple(620, 438, GdkPixbuf.InterpType.BILINEAR)
+                self.preview_image.set_from_pixbuf(scaled)
+                placements = {
+                    1: "one centered capture",
+                    2: "two upright captures stacked on the left",
+                    3: "two upright on the left, third rotated on the right",
+                }
+                self.layout_label.set_text(
+                    f"A4 landscape · {count} screenshot(s) · {placements[count]}"
+                )
+            except Exception as exc:
+                self.layout_label.set_text(f"Preview error: {exc}")
+
+        def update_slot_labels(self) -> None:
+            for path_text, label in self.name_labels.items():
+                if path_text in self.selected_paths:
+                    slot = self.selected_paths.index(path_text) + 1
+                    label.set_text(f"{slot}. {Path(path_text).name}")
+                else:
+                    label.set_text(Path(path_text).name)
+
+        def print_selected(self, *_args) -> None:
+            if not self.selected_paths:
+                return
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.QUESTION,
+                buttons=Gtk.ButtonsType.CANCEL,
+                text=f"Print {len(self.selected_paths)} screenshot(s) on A4?",
+            )
+            dialog.format_secondary_text(f"The job will be sent to {PRINTER}.")
+            dialog.add_button("Print", Gtk.ResponseType.YES)
+            response = dialog.run()
+            dialog.destroy()
+            if response != Gtk.ResponseType.YES:
+                return
+
+            selected = list(self.selected_paths)
+            try:
+                pdf_path = create_sheet_pdf(selected)
+                state = load_state()
+                state["sheets"].append(
+                    {
+                        "pdf": str(pdf_path),
+                        "images": selected,
+                        "created_at": datetime.now().isoformat(timespec="seconds"),
+                        "printed": False,
+                    }
+                )
+                save_state(state)
+                job = submit_to_printer(pdf_path)
+                mark_printed(pdf_path)
+                self.status_label.set_text(f"Sent to {PRINTER}: {job}")
+            except Exception as exc:
+                self.show_error(f"Could not create or print the sheet: {exc}")
+
+        def show_error(self, message: str) -> None:
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.ERROR,
+                buttons=Gtk.ButtonsType.CLOSE,
+                text="Notesheet",
+            )
+            dialog.format_secondary_text(message)
+            dialog.run()
+            dialog.destroy()
+
+    try:
+        Gtk.init([])
+        NotesheetWindow()
+        Gtk.main()
+        return 0
+    except Exception as exc:
+        print(f"Could not open Notesheet: {exc}", file=sys.stderr)
+        return 1
+
+
+def status() -> int:
+    state = load_state()
+    print(f"Capture folder: {ROOT}")
+    captures = list(CAPTURES_DIR.glob("screen-*.png")) if CAPTURES_DIR.exists() else []
+    print(f"Saved screenshots: {len(captures)}")
+    sheet = latest_sheet(state)
+    print(f"Latest sheet: {sheet if sheet else 'none yet'}")
+    return 0
+
+
+def setup_shortcut() -> int:
+    try:
+        import gi
+
+        gi.require_version("Gio", "2.0")
+        from gi.repository import Gio
+
+        media_keys = Gio.Settings.new(MEDIA_KEYS_SCHEMA)
+        shell_keys = Gio.Settings.new(SHELL_KEYS_SCHEMA)
+        state = load_state()
+        if "shortcut_backup" not in state:
+            state["shortcut_backup"] = shell_keys.get_strv("screenshot-window")
+
+        # Free Alt+Print from GNOME's window-screenshot action, then register
+        # this app's shortcut without disturbing any other custom shortcuts.
+        shell_keys.set_strv(
+            "screenshot-window",
+            [key for key in state["shortcut_backup"] if key != SHORTCUT],
+        )
+        custom = Gio.Settings.new_with_path(CUSTOM_SCHEMA, CUSTOM_PATH)
+        custom.set_string("name", "Notesheet full-screen capture")
+        custom.set_string(
+            "command",
+            shlex.join([sys.executable, str(Path(__file__).resolve()), "capture"]),
+        )
+        custom.set_string("binding", SHORTCUT)
+        paths = media_keys.get_strv("custom-keybindings")
+        if CUSTOM_PATH not in paths:
+            media_keys.set_strv("custom-keybindings", paths + [CUSTOM_PATH])
+        save_state(state)
+        print("Alt+Print is now bound to Notesheet full-screen capture.")
+        return 0
+    except Exception as exc:
+        print(f"Could not configure the GNOME shortcut: {exc}", file=sys.stderr)
+        return 1
+
+
+def remove_shortcut() -> int:
+    try:
+        import gi
+
+        gi.require_version("Gio", "2.0")
+        from gi.repository import Gio
+
+        media_keys = Gio.Settings.new(MEDIA_KEYS_SCHEMA)
+        shell_keys = Gio.Settings.new(SHELL_KEYS_SCHEMA)
+        paths = media_keys.get_strv("custom-keybindings")
+        media_keys.set_strv("custom-keybindings", [p for p in paths if p != CUSTOM_PATH])
+        Gio.Settings.new_with_path(CUSTOM_SCHEMA, CUSTOM_PATH).reset("name")
+        Gio.Settings.new_with_path(CUSTOM_SCHEMA, CUSTOM_PATH).reset("command")
+        Gio.Settings.new_with_path(CUSTOM_SCHEMA, CUSTOM_PATH).reset("binding")
+        state = load_state()
+        restore = state.pop("shortcut_backup", [SHORTCUT])
+        shell_keys.set_strv("screenshot-window", restore)
+        save_state(state)
+        print("Notesheet shortcut removed; GNOME's previous window-screenshot key was restored.")
+        return 0
+    except Exception as exc:
+        print(f"Could not remove the GNOME shortcut: {exc}", file=sys.stderr)
+        return 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Manage full-screen captures and print selected shots on A4."
+    )
+    parser.add_argument(
+        "action",
+        nargs="?",
+        default="capture",
+        choices=("capture", "ui", "print-latest", "open-latest", "status", "setup-shortcut", "remove-shortcut"),
+        help="action to perform (default: capture)",
+    )
+    action = parser.parse_args().action
+    return {
+        "capture": capture,
+        "ui": run_ui,
+        "print-latest": print_latest,
+        "open-latest": open_latest,
+        "status": status,
+        "setup-shortcut": setup_shortcut,
+        "remove-shortcut": remove_shortcut,
+    }[action]()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
