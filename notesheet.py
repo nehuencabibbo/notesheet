@@ -213,6 +213,7 @@ def set_shortcut_binding(binding: str) -> None:
 def request_capture_name(Gtk) -> str | None:
     dialog = Gtk.Dialog(title="Save screenshot", modal=True)
     dialog.add_button("Cancel capture", Gtk.ResponseType.CANCEL)
+    dialog.add_button("Use timestamp", Gtk.ResponseType.APPLY)
     dialog.add_button("Save", Gtk.ResponseType.ACCEPT)
     dialog.set_default_response(Gtk.ResponseType.ACCEPT)
     dialog.set_default_size(420, 130)
@@ -221,7 +222,7 @@ def request_capture_name(Gtk) -> str | None:
     content.set_border_width(16)
     content.set_spacing(10)
     instruction = Gtk.Label(
-        label="Name this screenshot, or leave the field empty to use the date and time."
+        label="Enter a name, or choose Use timestamp to keep the date and time name."
     )
     instruction.set_xalign(0)
     content.pack_start(instruction, False, False, 0)
@@ -234,7 +235,12 @@ def request_capture_name(Gtk) -> str | None:
     dialog.show_all()
     name_entry.grab_focus()
     response = dialog.run()
-    name = name_entry.get_text().strip() if response == Gtk.ResponseType.ACCEPT else None
+    if response == Gtk.ResponseType.ACCEPT:
+        name = name_entry.get_text().strip()
+    elif response == Gtk.ResponseType.APPLY:
+        name = ""
+    else:
+        name = None
     dialog.destroy()
     return name
 
@@ -496,9 +502,6 @@ def run_ui() -> int:
 
             toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             outer.pack_start(toolbar, False, False, 0)
-            refresh_button = Gtk.Button(label="Refresh")
-            refresh_button.connect("clicked", lambda *_: self.refresh_library(force=True))
-            toolbar.pack_start(refresh_button, False, False, 0)
             self.shortcut_label = Gtk.Label()
             self.update_shortcut_label()
             toolbar.pack_start(self.shortcut_label, False, False, 0)
@@ -515,9 +518,15 @@ def run_ui() -> int:
             library = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
             library.set_size_request(385, -1)
             content.pack_start(library, False, True, 0)
+            library_heading = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             library_title = Gtk.Label(label="Saved screenshots")
             library_title.set_xalign(0)
-            library.pack_start(library_title, False, False, 0)
+            library_title.set_hexpand(True)
+            library_heading.pack_start(library_title, True, True, 0)
+            refresh_button = Gtk.Button(label="Refresh")
+            refresh_button.connect("clicked", lambda *_: self.refresh_library(force=True))
+            library_heading.pack_end(refresh_button, False, False, 0)
+            library.pack_start(library_heading, False, False, 0)
 
             self.search_entry = Gtk.SearchEntry()
             self.search_entry.set_placeholder_text("Search screenshots by name")
@@ -689,7 +698,6 @@ def run_ui() -> int:
             self.status_label = Gtk.Label()
             self.status_label.set_xalign(0)
             outer.pack_start(self.status_label, False, False, 0)
-            self.update_shortcut_status()
             self.update_date_filter_label()
 
             self.connect("destroy", lambda *_args: Gtk.main_quit())
@@ -818,6 +826,14 @@ def run_ui() -> int:
                     "button-press-event", self.on_row_content_clicked, row, path_text
                 )
                 row_box.pack_start(content_click_area, True, True, 0)
+                rename_button = Gtk.Button.new_from_icon_name(
+                    "document-edit-symbolic", Gtk.IconSize.BUTTON
+                )
+                rename_button.set_relief(Gtk.ReliefStyle.NONE)
+                rename_button.set_size_request(30, 30)
+                rename_button.set_tooltip_text("Rename screenshot")
+                rename_button.connect("clicked", self.rename_capture, path_text)
+                row_box.pack_end(rename_button, False, False, 0)
 
                 try:
                     thumbnail = GdkPixbuf.Pixbuf.new_from_file_at_scale(
@@ -869,6 +885,89 @@ def run_ui() -> int:
                 check.set_active(not check.get_active())
             return True
 
+        def rename_capture(self, _button, path_text: str) -> None:
+            path = Path(path_text)
+            if not path.is_file():
+                self.show_error("This screenshot is no longer available.")
+                self.refresh_library(force=True)
+                return
+
+            custom_name_match = re.fullmatch(
+                r"screen-\d{8}-\d{6}-\d+-(.+)", path.stem
+            )
+            dialog = Gtk.Dialog(title="Rename screenshot", transient_for=self, modal=True)
+            dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+            dialog.add_button("Save", Gtk.ResponseType.ACCEPT)
+            dialog.set_default_response(Gtk.ResponseType.ACCEPT)
+            content = dialog.get_content_area()
+            content.set_border_width(16)
+            content.set_spacing(10)
+            instruction = Gtk.Label(
+                label="Enter a name, or leave it blank to use the capture timestamp."
+            )
+            instruction.set_xalign(0)
+            content.pack_start(instruction, False, False, 0)
+            name_entry = Gtk.Entry()
+            name_entry.set_placeholder_text("Screenshot name (optional)")
+            name_entry.set_max_length(100)
+            if custom_name_match:
+                name_entry.set_text(custom_name_match.group(1))
+                name_entry.select_region(0, -1)
+            name_entry.set_activates_default(True)
+            content.pack_start(name_entry, False, False, 0)
+            dialog.show_all()
+            name_entry.grab_focus()
+            response = dialog.run()
+            new_name = safe_capture_name(name_entry.get_text())
+            dialog.destroy()
+            if response != Gtk.ResponseType.ACCEPT:
+                return
+
+            capture_stamp = capture_datetime(path).strftime("%Y%m%d-%H%M%S-%f")
+            suffix = f"-{new_name}" if new_name else ""
+            target = path.with_name(f"screen-{capture_stamp}{suffix}.png")
+            if target == path:
+                return
+            if target.exists():
+                self.show_error("A screenshot with that timestamp and name already exists.")
+                return
+
+            try:
+                path.rename(target)
+            except OSError as exc:
+                self.show_error(f"Could not rename the screenshot: {exc}")
+                return
+
+            old_path = str(path)
+            new_path = str(target)
+            self.selected_paths = [new_path if item == old_path else item for item in self.selected_paths]
+            if self.focus_path == old_path:
+                self.focus_path = new_path
+            history_error = None
+            try:
+                state = load_state()
+                state["pending"] = [
+                    new_path if item == old_path else item
+                    for item in state.get("pending", [])
+                ]
+                for sheet in state.get("sheets", []):
+                    sheet["images"] = [
+                        new_path if item == old_path else item
+                        for item in sheet.get("images", [])
+                    ]
+                save_state(state)
+            except Exception as exc:
+                history_error = str(exc)
+
+            self.refresh_library(force=True)
+            if history_error:
+                self.show_error(
+                    f"The screenshot was renamed, but its saved history could not be updated: {history_error}"
+                )
+            else:
+                display_name = new_name or target.name
+                self.status_label.set_text(f"Screenshot renamed to {display_name}.")
+
         def on_toggled(self, button, path_text: str) -> None:
             if self.rebuilding:
                 return
@@ -894,19 +993,6 @@ def run_ui() -> int:
                 self.shortcut_label.set_markup(f"Capture shortcut: <b>{shortcut}</b>")
             except Exception:
                 self.shortcut_label.set_text("Capture shortcut: unavailable")
-
-        def update_shortcut_status(self) -> None:
-            try:
-                shortcut = format_shortcut(get_shortcut_binding())
-            except Exception:
-                shortcut = "the capture shortcut"
-            if shortcut == "Disabled":
-                self.status_label.set_text("Capture shortcut is disabled. Select up to three saved screenshots here.")
-            else:
-                shortcut = html.escape(shortcut)
-                self.status_label.set_markup(
-                    f"<b>{shortcut}</b> captures a full screen. Select up to three shots here."
-                )
 
         def change_shortcut(self, *_args) -> None:
             try:
@@ -1035,12 +1121,8 @@ def run_ui() -> int:
                 self.show_error(f"Could not change the capture shortcut: {error}")
                 return
             self.update_shortcut_label()
-            self.update_shortcut_status()
             if committed:
-                shortcut = html.escape(format_shortcut(chosen["binding"]))
-                self.status_label.set_markup(
-                    f"Capture shortcut changed to <b>{shortcut}</b>."
-                )
+                self.status_label.set_text("Capture shortcut updated.")
 
         def move_selected(self, direction: int) -> None:
             path_text = self.focus_path
