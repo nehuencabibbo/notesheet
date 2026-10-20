@@ -34,15 +34,14 @@ python3 notesheet.py setup-shortcut
 
 The current shortcut appears in bold in the toolbar. Use **Change…** to choose a different combination. Press Escape to cancel. Run `python3 notesheet.py remove-shortcut` to restore GNOME’s previous window-screenshot shortcut.
 
-Each capture opens a save dialog before writing the image. Enter an optional name, choose **Use timestamp** to keep the default date-and-time name, or use **Cancel capture** to discard the screenshot. The saved confirmation uses urgent notification priority so GNOME can show it over fullscreen video.
+Each capture opens a save dialog before writing the image. Enter an optional name, or leave it blank to use `screen-YYYYMMDD-HHMMSS-microseconds.png` (for example, `screen-20261020-132932-359695.png`). **Cancel capture** discards the screenshot. The saved confirmation uses urgent notification priority so GNOME can show it over fullscreen video.
 
 ## Use the app
 
 - Captures are saved under `~/Pictures/NoteCaptures/Captures/`.
 - Screenshots are listed newest to oldest. Use the search field to filter by custom name or file name. Use the rename icon on a screenshot row to change its name; leave the name blank to use its capture timestamp.
 - Use the **From** and **To** calendar pickers to filter by an inclusive date range. Leave either limit empty for an open-ended range, or choose the same date in both pickers to show one day. Use **Clear** to show all dates again.
-- Select one to three screenshots by clicking their checkbox or the thumbnail and details area. Their order determines their positions on the page. Use **Move up** and **Move down** to reorder them.
-- With three selected, **Move left** and **Move right** swap a screenshot between the left column and the rotated slot on the right.
+- Select one to three screenshots by clicking their checkbox or the thumbnail and details area. Selected screenshots stay highlighted in blue with their checkboxes marked, appear at the top in selection order, and remain visible regardless of active search or date filters. Their selection order determines their positions on the page.
 - The A4 landscape preview updates as the selection changes. **Print selected** offers the system default printer, other CUPS queues, and **Save PDF…**. Created sheets are also kept under `~/Pictures/NoteCaptures/Sheets/`.
 - Screenshots remain in the library after printing. **Delete selection** removes all checked screenshots after confirmation.
 

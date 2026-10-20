@@ -213,7 +213,6 @@ def set_shortcut_binding(binding: str) -> None:
 def request_capture_name(Gtk) -> str | None:
     dialog = Gtk.Dialog(title="Save screenshot", modal=True)
     dialog.add_button("Cancel capture", Gtk.ResponseType.CANCEL)
-    dialog.add_button("Use timestamp", Gtk.ResponseType.APPLY)
     dialog.add_button("Save", Gtk.ResponseType.ACCEPT)
     dialog.set_default_response(Gtk.ResponseType.ACCEPT)
     dialog.set_default_size(420, 130)
@@ -222,7 +221,11 @@ def request_capture_name(Gtk) -> str | None:
     content.set_border_width(16)
     content.set_spacing(10)
     instruction = Gtk.Label(
-        label="Enter a name, or choose Use timestamp to keep the date and time name."
+        label=(
+            "Leave the name blank to use the default format: "
+            "screen-YYYYMMDD-HHMMSS-microseconds.png "
+            "(for example, screen-20261020-132932-359695.png)."
+        )
     )
     instruction.set_xalign(0)
     content.pack_start(instruction, False, False, 0)
@@ -235,12 +238,7 @@ def request_capture_name(Gtk) -> str | None:
     dialog.show_all()
     name_entry.grab_focus()
     response = dialog.run()
-    if response == Gtk.ResponseType.ACCEPT:
-        name = name_entry.get_text().strip()
-    elif response == Gtk.ResponseType.APPLY:
-        name = ""
-    else:
-        name = None
+    name = name_entry.get_text().strip() if response == Gtk.ResponseType.ACCEPT else None
     dialog.destroy()
     return name
 
@@ -482,7 +480,6 @@ def run_ui() -> int:
             self.selected_paths: list[str] = []
             self.focus_path: str | None = None
             self.checks: dict[str, Gtk.CheckButton] = {}
-            self.name_labels: dict[str, Gtk.Label] = {}
             self.row_paths: dict[Gtk.ListBoxRow, str] = {}
             self.date_from: date | None = None
             self.date_to: date | None = None
@@ -601,6 +598,23 @@ def run_ui() -> int:
                     background-color: #51383b;
                     border-color: #604447;
                 }
+                row:selected:not(.capture-selected) {
+                    background-image: none;
+                    background-color: transparent;
+                    box-shadow: none;
+                    color: #f2f2f2;
+                }
+                row.capture-selected {
+                    background-image: none;
+                    background-color: #246db0;
+                    color: #ffffff;
+                }
+                row.capture-selected label {
+                    color: #ffffff;
+                }
+                row.capture-selected label.dim-label {
+                    color: #dceafa;
+                }
                 """
             )
             Gtk.StyleContext.add_provider_for_screen(
@@ -620,45 +634,6 @@ def run_ui() -> int:
             scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             scroll.add(self.listbox)
             library.pack_start(scroll, True, True, 0)
-
-            move_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            library.pack_start(move_row, False, False, 0)
-            move_up = Gtk.Button(label="Move up")
-            move_up.connect("clicked", lambda *_: self.move_selected(-1))
-            move_row.pack_start(move_up, True, True, 0)
-            move_down = Gtk.Button(label="Move down")
-            move_down.connect("clicked", lambda *_: self.move_selected(1))
-            move_row.pack_start(move_down, True, True, 0)
-
-            side_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            library.pack_start(side_row, False, False, 0)
-            move_left = Gtk.Button(label="Move left")
-            move_left.connect("clicked", lambda *_: self.move_side(-1))
-            self.move_left_button = move_left
-            self.move_left_hover = Gtk.EventBox()
-            self.move_left_hover.set_visible_window(False)
-            self.move_left_hover.set_above_child(True)
-            self.move_left_hover.add_events(
-                Gdk.EventMask.POINTER_MOTION_MASK
-                | Gdk.EventMask.ENTER_NOTIFY_MASK
-                | Gdk.EventMask.LEAVE_NOTIFY_MASK
-            )
-            self.move_left_hover.add(move_left)
-            side_row.pack_start(self.move_left_hover, True, True, 0)
-            move_right = Gtk.Button(label="Move right")
-            move_right.connect("clicked", lambda *_: self.move_side(1))
-            self.move_right_button = move_right
-            self.move_right_hover = Gtk.EventBox()
-            self.move_right_hover.set_visible_window(False)
-            self.move_right_hover.set_above_child(True)
-            self.move_right_hover.add_events(
-                Gdk.EventMask.POINTER_MOTION_MASK
-                | Gdk.EventMask.ENTER_NOTIFY_MASK
-                | Gdk.EventMask.LEAVE_NOTIFY_MASK
-            )
-            self.move_right_hover.add(move_right)
-            side_row.pack_start(self.move_right_hover, True, True, 0)
-            self.update_side_button_state()
 
             library_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             library.pack_start(library_actions, False, False, 0)
@@ -709,11 +684,20 @@ def run_ui() -> int:
         def list_capture_paths(self) -> list[Path]:
             if not CAPTURES_DIR.exists():
                 return []
-            return sorted(
-                CAPTURES_DIR.glob("screen-*.png"),
+            paths = list(CAPTURES_DIR.glob("screen-*.png"))
+            paths_by_text = {str(path): path for path in paths}
+            selected = [
+                paths_by_text[path_text]
+                for path_text in self.selected_paths
+                if path_text in paths_by_text
+            ]
+            selected_text = {str(path) for path in selected}
+            remaining = sorted(
+                (path for path in paths if str(path) not in selected_text),
                 key=lambda path: (capture_datetime(path), path.stat().st_mtime_ns),
                 reverse=True,
             )
+            return selected + remaining
 
         def inventory_key(self, paths: list[Path]) -> tuple:
             return tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in paths)
@@ -723,6 +707,8 @@ def run_ui() -> int:
             path_text = self.row_paths.get(row)
             if not path_text:
                 return False
+            if path_text in self.selected_paths:
+                return True
             path = Path(path_text)
             if query and not (
                 query in capture_display_name(path).casefold()
@@ -786,6 +772,10 @@ def run_ui() -> int:
             self.refresh_library()
             return True
 
+        def refresh_library_after_selection(self) -> bool:
+            self.refresh_library(force=True)
+            return False
+
         def refresh_library(self, force: bool = False) -> None:
             paths = self.list_capture_paths()
             current_inventory = self.inventory_key(paths)
@@ -801,12 +791,13 @@ def run_ui() -> int:
             for child in self.listbox.get_children():
                 self.listbox.remove(child)
             self.checks.clear()
-            self.name_labels.clear()
             self.row_paths.clear()
 
             for path in paths:
                 path_text = str(path)
                 row = Gtk.ListBoxRow()
+                if path_text in self.selected_paths:
+                    row.get_style_context().add_class("capture-selected")
                 row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
                 row_box.set_border_width(6)
                 row.add(row_box)
@@ -849,7 +840,6 @@ def run_ui() -> int:
                 name = Gtk.Label(label=capture_display_name(path))
                 name.set_xalign(0)
                 text_box.pack_start(name, False, False, 0)
-                self.name_labels[path_text] = name
                 try:
                     with Image.open(path) as shot:
                         detail = f"{shot.width} × {shot.height} px"
@@ -865,7 +855,6 @@ def run_ui() -> int:
 
             self.rebuilding = False
             self.listbox.show_all()
-            self.update_slot_labels()
             if self.focus_path:
                 for row, path_text in self.row_paths.items():
                     if path_text == self.focus_path:
@@ -880,9 +869,9 @@ def run_ui() -> int:
             if event.button != 1:
                 return False
             self.listbox.select_row(row)
-            check = self.checks.get(path_text)
-            if check:
-                check.set_active(not check.get_active())
+            self.set_capture_selected(
+                path_text, path_text not in self.selected_paths
+            )
             return True
 
         def rename_capture(self, _button, path_text: str) -> None:
@@ -971,20 +960,38 @@ def run_ui() -> int:
         def on_toggled(self, button, path_text: str) -> None:
             if self.rebuilding:
                 return
+            self.set_capture_selected(path_text, button.get_active())
+
+        def set_capture_selected(self, path_text: str, selected: bool) -> None:
             self.focus_path = path_text
-            if button.get_active():
-                if path_text not in self.selected_paths:
-                    if len(self.selected_paths) >= 3:
-                        self.rebuilding = True
-                        button.set_active(False)
-                        self.rebuilding = False
-                        self.status_label.set_text("A sheet holds up to three screenshots.")
-                        return
+            is_selected = path_text in self.selected_paths
+            if selected and not is_selected:
+                if len(self.selected_paths) >= 3:
+                    selected = False
+                    self.status_label.set_text("A sheet holds up to three screenshots.")
+                else:
                     self.selected_paths.append(path_text)
-            elif path_text in self.selected_paths:
+            elif not selected and is_selected:
                 self.selected_paths.remove(path_text)
-            self.update_slot_labels()
+
+            check = self.checks.get(path_text)
+            if check and check.get_active() != selected:
+                was_rebuilding = self.rebuilding
+                self.rebuilding = True
+                check.set_active(selected)
+                self.rebuilding = was_rebuilding
+
+            for row, row_path in self.row_paths.items():
+                if row_path == path_text:
+                    style = row.get_style_context()
+                    if selected:
+                        style.add_class("capture-selected")
+                    else:
+                        style.remove_class("capture-selected")
+                    break
+            self.listbox.invalidate_filter()
             self.update_preview()
+            GLib.idle_add(self.refresh_library_after_selection)
 
         def update_shortcut_label(self) -> None:
             try:
@@ -1124,56 +1131,6 @@ def run_ui() -> int:
             if committed:
                 self.status_label.set_text("Capture shortcut updated.")
 
-        def move_selected(self, direction: int) -> None:
-            path_text = self.focus_path
-            if path_text not in self.selected_paths:
-                self.status_label.set_text("Select a checked screenshot before changing its slot.")
-                return
-            index = self.selected_paths.index(path_text)
-            other = index + direction
-            if not 0 <= other < len(self.selected_paths):
-                return
-            self.selected_paths[index], self.selected_paths[other] = (
-                self.selected_paths[other],
-                self.selected_paths[index],
-            )
-            self.update_slot_labels()
-            self.update_preview()
-
-        def move_side(self, direction: int) -> None:
-            path_text = self.focus_path
-            if len(self.selected_paths) != 3 or path_text not in self.selected_paths:
-                return
-            index = self.selected_paths.index(path_text)
-            if direction > 0:
-                if index == 2:
-                    return
-                other = 2
-            else:
-                if index < 2:
-                    return
-                other = 1
-
-            self.selected_paths[index], self.selected_paths[other] = (
-                self.selected_paths[other],
-                self.selected_paths[index],
-            )
-            self.update_slot_labels()
-            self.update_preview()
-
-        def update_side_button_state(self) -> None:
-            enabled = len(self.selected_paths) == 3
-            explanation = (
-                "Swap this screenshot between the left column and the right-hand slot."
-                if enabled
-                else "Select three screenshots to use the right-hand slot."
-            )
-            for button in (self.move_left_button, self.move_right_button):
-                button.set_sensitive(enabled)
-            for wrapper in (self.move_left_hover, self.move_right_hover):
-                wrapper.set_above_child(not enabled)
-                wrapper.set_tooltip_text(None if enabled else explanation)
-
         def clear_selection(self, *_args) -> None:
             self.selected_paths = []
             self.refresh_library(force=True)
@@ -1232,7 +1189,6 @@ def run_ui() -> int:
 
         def update_preview(self) -> None:
             count = len(self.selected_paths)
-            self.update_side_button_state()
             self.print_button.set_sensitive(count > 0)
             self.print_button.set_label(f"Print selected ({count})")
             self.delete_selected_button.set_sensitive(count > 0)
@@ -1263,14 +1219,6 @@ def run_ui() -> int:
                 )
             except Exception as exc:
                 self.layout_label.set_text(f"Preview error: {exc}")
-
-        def update_slot_labels(self) -> None:
-            for path_text, label in self.name_labels.items():
-                if path_text in self.selected_paths:
-                    slot = self.selected_paths.index(path_text) + 1
-                    label.set_text(f"{slot}. {capture_display_name(Path(path_text))}")
-                else:
-                    label.set_text(capture_display_name(Path(path_text)))
 
         def print_selected(self, *_args) -> None:
             if not self.selected_paths:
