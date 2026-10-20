@@ -32,6 +32,8 @@ PAGE_MARGIN_MM = 5.0
 GAP_MM = 2.0
 TARGET_WIDTH_MM = 180.0
 OUTPUT_DPI = 300
+PREVIEW_WIDTH = 620
+PREVIEW_HEIGHT = 438
 
 
 def pictures_dir() -> Path:
@@ -669,6 +671,7 @@ def run_ui() -> int:
             preview_frame.set_shadow_type(Gtk.ShadowType.IN)
             preview_column.pack_start(preview_frame, True, True, 0)
             self.preview_image = Gtk.Image()
+            self.preview_image.set_size_request(PREVIEW_WIDTH, PREVIEW_HEIGHT)
             self.preview_image.set_from_icon_name("image-x-generic", Gtk.IconSize.DIALOG)
             preview_frame.add(self.preview_image)
 
@@ -1164,7 +1167,9 @@ def run_ui() -> int:
                 loader.write(buffer.getvalue())
                 loader.close()
                 pixbuf = loader.get_pixbuf()
-                scaled = pixbuf.scale_simple(620, 438, GdkPixbuf.InterpType.BILINEAR)
+                scaled = pixbuf.scale_simple(
+                    PREVIEW_WIDTH, PREVIEW_HEIGHT, GdkPixbuf.InterpType.BILINEAR
+                )
                 self.preview_image.set_from_pixbuf(scaled)
                 placements = {
                     1: "one centered capture",
