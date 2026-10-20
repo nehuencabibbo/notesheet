@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import html
 import io
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from PIL import Image
@@ -60,6 +62,30 @@ def timestamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S-%f")
 
 
+def capture_display_name(path: Path) -> str:
+    """Return the user-provided name when a capture has one."""
+    match = re.fullmatch(r"screen-\d{8}-\d{6}-\d+-(.+)", path.stem)
+    return match.group(1) if match else path.name
+
+
+def capture_datetime(path: Path) -> datetime:
+    """Read the capture timestamp from its filename, falling back to file time."""
+    match = re.match(r"screen-(\d{8}-\d{6}-\d{6})(?:-|$)", path.stem)
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%Y%m%d-%H%M%S-%f")
+        except ValueError:
+            pass
+    return datetime.fromtimestamp(path.stat().st_mtime)
+
+
+def safe_capture_name(name: str) -> str:
+    """Keep a capture name readable while removing path separators and controls."""
+    name = "".join(character for character in name.strip() if character.isprintable())
+    name = name.replace("/", "-").replace("\\", "-")
+    return re.sub(r"\s+", " ", name).strip(" .")
+
+
 def load_state() -> dict:
     if not STATE_PATH.exists():
         return {"pending": [], "sheets": []}
@@ -86,7 +112,7 @@ def save_state(state: dict) -> None:
 def notify(title: str, body: str) -> None:
     try:
         subprocess.run(
-            ["notify-send", title, body],
+            ["notify-send", "--urgency=critical", title, body],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -119,16 +145,42 @@ def get_shortcut_binding() -> str:
 def format_shortcut(binding: str) -> str:
     if not binding:
         return "Disabled"
-    readable = binding
-    for token, label in (
-        ("<Control>", "Ctrl+"),
-        ("<Ctrl>", "Ctrl+"),
-        ("<Alt>", "Alt+"),
-        ("<Shift>", "Shift+"),
-        ("<Super>", "Super+"),
-    ):
-        readable = readable.replace(token, label)
-    return readable
+    modifier_labels = {
+        "Primary": "Ctrl",
+        "Control": "Ctrl",
+        "Ctrl": "Ctrl",
+        "Alt": "Alt",
+        "Shift": "Shift",
+        "Super": "Super",
+        "Meta": "Meta",
+        "Hyper": "Hyper",
+    }
+    modifiers = []
+    while binding.startswith("<") and ">" in binding:
+        token, binding = binding[1:].split(">", 1)
+        modifiers.append(modifier_labels.get(token, token))
+
+    key_labels = {
+        "Print": "Print Screen",
+        "space": "Space",
+        "Page_Up": "Page Up",
+        "Page_Down": "Page Down",
+        "KP_Enter": "Keypad Enter",
+        "KP_Add": "Keypad +",
+        "KP_Subtract": "Keypad −",
+        "KP_Multiply": "Keypad ×",
+        "KP_Divide": "Keypad ÷",
+        "KP_Decimal": "Keypad .",
+    }
+    key = key_labels.get(binding, binding.replace("_", " "))
+    if len(key) == 1 and key.isalpha():
+        key = key.upper()
+    return "+".join([*modifiers, key]) if modifiers else key
+
+
+def canonical_shortcut_binding(binding: str) -> str:
+    """Use accelerator modifier names that GNOME settings accept consistently."""
+    return binding.replace("<Primary>", "<Control>").replace("<Ctrl>", "<Control>")
 
 
 def set_shortcut_binding(binding: str) -> None:
@@ -137,6 +189,7 @@ def set_shortcut_binding(binding: str) -> None:
     gi.require_version("Gio", "2.0")
     from gi.repository import Gio
 
+    binding = canonical_shortcut_binding(binding)
     state = load_state()
     restore = state.get("shortcut_backup", [SHORTCUT])
     shell_keys = Gio.Settings.new(SHELL_KEYS_SCHEMA)
@@ -155,7 +208,36 @@ def set_shortcut_binding(binding: str) -> None:
         media_keys.set_strv("custom-keybindings", paths + [CUSTOM_PATH])
 
 
-def capture_full_screen() -> Path:
+def request_capture_name(Gtk) -> str | None:
+    dialog = Gtk.Dialog(title="Save screenshot", modal=True)
+    dialog.add_button("Cancel capture", Gtk.ResponseType.CANCEL)
+    dialog.add_button("Save", Gtk.ResponseType.ACCEPT)
+    dialog.set_default_response(Gtk.ResponseType.ACCEPT)
+    dialog.set_default_size(420, 130)
+
+    content = dialog.get_content_area()
+    content.set_border_width(16)
+    content.set_spacing(10)
+    instruction = Gtk.Label(
+        label="Name this screenshot, or leave the field empty to use the date and time."
+    )
+    instruction.set_xalign(0)
+    content.pack_start(instruction, False, False, 0)
+    name_entry = Gtk.Entry()
+    name_entry.set_placeholder_text("Screenshot name (optional)")
+    name_entry.set_max_length(100)
+    name_entry.set_activates_default(True)
+    content.pack_start(name_entry, False, False, 0)
+
+    dialog.show_all()
+    name_entry.grab_focus()
+    response = dialog.run()
+    name = name_entry.get_text().strip() if response == Gtk.ResponseType.ACCEPT else None
+    dialog.destroy()
+    return name
+
+
+def capture_full_screen() -> Path | None:
     """Capture the X11 desktop root window through GNOME's GDK bindings."""
     try:
         import gi
@@ -177,8 +259,13 @@ def capture_full_screen() -> Path:
         pixbuf = Gdk.pixbuf_get_from_window(root_window, 0, 0, width, height)
         if pixbuf is None:
             raise RuntimeError("The desktop did not provide a screenshot image.")
+        name = request_capture_name(Gtk)
+        if name is None:
+            return None
         CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
-        output = CAPTURES_DIR / f"screen-{timestamp()}.png"
+        safe_name = safe_capture_name(name)
+        name_suffix = f"-{safe_name}" if safe_name else ""
+        output = CAPTURES_DIR / f"screen-{timestamp()}{name_suffix}.png"
         pixbuf.savev(str(output), "png", [], [])
         return output
     except Exception as exc:
@@ -321,6 +408,8 @@ def mark_printed(pdf_path: Path) -> None:
 def capture() -> int:
     try:
         shot = capture_full_screen()
+        if shot is None:
+            return 0
         notify("Screenshot saved", f"Open Notesheet to choose shots and print.\n{shot}")
         return 0
     except Exception as exc:
@@ -387,6 +476,11 @@ def run_ui() -> int:
             self.checks: dict[str, Gtk.CheckButton] = {}
             self.name_labels: dict[str, Gtk.Label] = {}
             self.row_paths: dict[Gtk.ListBoxRow, str] = {}
+            self.date_from: date | None = None
+            self.date_to: date | None = None
+            self.date_picker_buttons: dict[str, Gtk.Button] = {}
+            self.date_picker_signal_ids: dict[str, int] = {}
+            self.date_picker_popovers: dict[str, Gtk.Popover] = {}
             self.inventory: tuple = ()
             self.rebuilding = False
 
@@ -423,9 +517,94 @@ def run_ui() -> int:
             library_title.set_xalign(0)
             library.pack_start(library_title, False, False, 0)
 
+            self.search_entry = Gtk.SearchEntry()
+            self.search_entry.set_placeholder_text("Search screenshots by name")
+            self.search_entry.connect(
+                "search-changed", lambda *_: self.listbox.invalidate_filter()
+            )
+            library.pack_start(self.search_entry, False, False, 0)
+
+            date_title = Gtk.Label(label="Capture date")
+            date_title.set_xalign(0)
+            library.pack_start(date_title, False, False, 0)
+            date_filter_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            for bound, caption in (("from", "From"), ("to", "To")):
+                date_field = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+                date_caption = Gtk.Label(label=caption)
+                date_caption.set_xalign(0)
+                date_field.pack_start(date_caption, False, False, 0)
+                date_button = Gtk.Button(label="Any date")
+                date_button.set_tooltip_text(f"Choose the {caption.lower()} date")
+                date_popover = Gtk.Popover.new(date_button)
+                date_popover.set_position(Gtk.PositionType.BOTTOM)
+                date_calendar = Gtk.Calendar()
+                date_popover.add(date_calendar)
+                date_button.connect(
+                    "clicked", self.toggle_date_picker, bound, date_popover, date_calendar
+                )
+                signal_id = date_calendar.connect(
+                    "day-selected", self.on_date_bound_selected, bound, date_popover
+                )
+                date_field.pack_start(date_button, False, False, 0)
+                date_filter_row.pack_start(date_field, True, True, 0)
+                self.date_picker_buttons[bound] = date_button
+                self.date_picker_signal_ids[bound] = signal_id
+                self.date_picker_popovers[bound] = date_popover
+            self.clear_date_button = Gtk.Button(label="Clear")
+            self.clear_date_button.set_tooltip_text("Clear both date limits")
+            self.clear_date_button.set_size_request(56, 30)
+            self.clear_date_button.set_valign(Gtk.Align.CENTER)
+            self.clear_date_button.set_no_show_all(True)
+            self.clear_date_button.connect("clicked", self.clear_date_filter)
+            clear_style = Gtk.CssProvider()
+            clear_style.load_from_data(
+                b"""
+                button.date-filter-clear {
+                    padding: 2px 7px;
+                    min-width: 0;
+                    min-height: 0;
+                    color: #c1cbd5;
+                    background-image: none;
+                    background-color: #39434d;
+                    border: 1px solid #4c5966;
+                    border-radius: 5px;
+                }
+                button.date-filter-clear:hover {
+                    background-color: #46535f;
+                }
+                button.delete-selection {
+                    color: #ffffff;
+                    background-image: none;
+                    background-color: #873c42;
+                    border: 1px solid #a45157;
+                    border-radius: 5px;
+                }
+                button.delete-selection:hover {
+                    background-color: #9b474d;
+                }
+                button.delete-selection:active {
+                    background-color: #713238;
+                }
+                button.delete-selection:disabled {
+                    color: #c0aeb0;
+                    background-color: #51383b;
+                    border-color: #604447;
+                }
+                """
+            )
+            Gtk.StyleContext.add_provider_for_screen(
+                Gdk.Screen.get_default(),
+                clear_style,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+            )
+            self.clear_date_button.get_style_context().add_class("date-filter-clear")
+            date_filter_row.pack_end(self.clear_date_button, False, False, 0)
+            library.pack_start(date_filter_row, False, False, 0)
+
             self.listbox = Gtk.ListBox()
             self.listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
             self.listbox.connect("row-selected", self.on_row_selected)
+            self.listbox.set_filter_func(self.filter_capture_row)
             scroll = Gtk.ScrolledWindow()
             scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             scroll.add(self.listbox)
@@ -475,9 +654,11 @@ def run_ui() -> int:
             clear_button = Gtk.Button(label="Clear selection")
             clear_button.connect("clicked", self.clear_selection)
             library_actions.pack_start(clear_button, True, True, 0)
-            delete_button = Gtk.Button(label="Delete focused")
-            delete_button.connect("clicked", self.delete_focused)
-            library_actions.pack_start(delete_button, True, True, 0)
+            self.delete_selected_button = Gtk.Button(label="Delete selection")
+            self.delete_selected_button.connect("clicked", self.delete_selected)
+            self.delete_selected_button.set_sensitive(False)
+            self.delete_selected_button.get_style_context().add_class("delete-selection")
+            library_actions.pack_start(self.delete_selected_button, True, True, 0)
 
             preview_column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
             content.pack_start(preview_column, True, True, 0)
@@ -506,6 +687,7 @@ def run_ui() -> int:
             self.status_label.set_xalign(0)
             outer.pack_start(self.status_label, False, False, 0)
             self.update_shortcut_status()
+            self.update_date_filter_label()
 
             self.connect("destroy", lambda *_args: Gtk.main_quit())
             self.refresh_library(force=True)
@@ -518,12 +700,76 @@ def run_ui() -> int:
                 return []
             return sorted(
                 CAPTURES_DIR.glob("screen-*.png"),
-                key=lambda path: path.stat().st_mtime_ns,
+                key=lambda path: (capture_datetime(path), path.stat().st_mtime_ns),
                 reverse=True,
             )
 
         def inventory_key(self, paths: list[Path]) -> tuple:
             return tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in paths)
+
+        def filter_capture_row(self, row, *_args) -> bool:
+            query = self.search_entry.get_text().strip().casefold()
+            path_text = self.row_paths.get(row)
+            if not path_text:
+                return False
+            path = Path(path_text)
+            if query and not (
+                query in capture_display_name(path).casefold()
+                or query in path.name.casefold()
+            ):
+                return False
+            captured_on = capture_datetime(path).date()
+            if self.date_from and captured_on < self.date_from:
+                return False
+            if self.date_to and captured_on > self.date_to:
+                return False
+            return True
+
+        def toggle_date_picker(self, _button, bound: str, popover, calendar) -> None:
+            if popover.get_visible():
+                popover.popdown()
+            else:
+                selected = self.date_from if bound == "from" else self.date_to
+                signal_id = self.date_picker_signal_ids[bound]
+                calendar.handler_block(signal_id)
+                if selected:
+                    calendar.select_month(selected.month - 1, selected.year)
+                    calendar.select_day(selected.day)
+                else:
+                    calendar.select_day(0)
+                calendar.handler_unblock(signal_id)
+                popover.show_all()
+                popover.popup()
+
+        def update_date_filter_label(self) -> None:
+            for bound, selected in (("from", self.date_from), ("to", self.date_to)):
+                label = selected.isoformat() if selected else "Any date"
+                self.date_picker_buttons[bound].set_label(label)
+            if self.date_from is not None or self.date_to is not None:
+                self.clear_date_button.show()
+            else:
+                self.clear_date_button.hide()
+
+        def on_date_bound_selected(self, calendar, bound: str, popover) -> None:
+            year, month, day = calendar.get_date()
+            selected = date(year, month + 1, day)
+            if bound == "from":
+                self.date_from = selected
+            else:
+                self.date_to = selected
+            if self.date_from and self.date_to and self.date_from > self.date_to:
+                self.date_from, self.date_to = self.date_to, self.date_from
+            self.update_date_filter_label()
+            self.listbox.invalidate_filter()
+            popover.popdown()
+
+        def clear_date_filter(self, *_args) -> None:
+            self.date_from = None
+            self.date_to = None
+            self.update_date_filter_label()
+            self.listbox.invalidate_filter()
+            for popover in self.date_picker_popovers.values():
+                popover.popdown()
 
         def periodic_refresh(self) -> bool:
             self.refresh_library()
@@ -559,6 +805,17 @@ def run_ui() -> int:
                 row_box.pack_start(check, False, False, 0)
                 self.checks[path_text] = check
 
+                content_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
+                content_click_area = Gtk.EventBox()
+                content_click_area.set_visible_window(False)
+                content_click_area.set_hexpand(True)
+                content_click_area.add(content_box)
+                content_click_area.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+                content_click_area.connect(
+                    "button-press-event", self.on_row_content_clicked, row, path_text
+                )
+                row_box.pack_start(content_click_area, True, True, 0)
+
                 try:
                     thumbnail = GdkPixbuf.Pixbuf.new_from_file_at_scale(
                         path_text, 128, 76, True
@@ -566,11 +823,11 @@ def run_ui() -> int:
                     image = Gtk.Image.new_from_pixbuf(thumbnail)
                 except Exception:
                     image = Gtk.Image.new_from_icon_name("image-x-generic", Gtk.IconSize.DIALOG)
-                row_box.pack_start(image, False, False, 0)
+                content_box.pack_start(image, False, False, 0)
 
                 text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
-                row_box.pack_start(text_box, True, True, 0)
-                name = Gtk.Label(label=path.name)
+                content_box.pack_start(text_box, True, True, 0)
+                name = Gtk.Label(label=capture_display_name(path))
                 name.set_xalign(0)
                 text_box.pack_start(name, False, False, 0)
                 self.name_labels[path_text] = name
@@ -600,6 +857,15 @@ def run_ui() -> int:
         def on_row_selected(self, _listbox, row) -> None:
             self.focus_path = self.row_paths.get(row) if row else None
 
+        def on_row_content_clicked(self, _widget, event, row, path_text: str) -> bool:
+            if event.button != 1:
+                return False
+            self.listbox.select_row(row)
+            check = self.checks.get(path_text)
+            if check:
+                check.set_active(not check.get_active())
+            return True
+
         def on_toggled(self, button, path_text: str) -> None:
             if self.rebuilding:
                 return
@@ -621,7 +887,8 @@ def run_ui() -> int:
         def update_shortcut_label(self) -> None:
             try:
                 binding = get_shortcut_binding()
-                self.shortcut_label.set_text(f"Capture shortcut: {format_shortcut(binding)}")
+                shortcut = html.escape(format_shortcut(binding))
+                self.shortcut_label.set_markup(f"Capture shortcut: <b>{shortcut}</b>")
             except Exception:
                 self.shortcut_label.set_text("Capture shortcut: unavailable")
 
@@ -633,7 +900,10 @@ def run_ui() -> int:
             if shortcut == "Disabled":
                 self.status_label.set_text("Capture shortcut is disabled. Select up to three saved screenshots here.")
             else:
-                self.status_label.set_text(f"{shortcut} captures a full screen. Select up to three shots here.")
+                shortcut = html.escape(shortcut)
+                self.status_label.set_markup(
+                    f"<b>{shortcut}</b> captures a full screen. Select up to three shots here."
+                )
 
         def change_shortcut(self, *_args) -> None:
             try:
@@ -688,6 +958,21 @@ def run_ui() -> int:
                 Gdk.KEY_Super_L, Gdk.KEY_Super_R,
                 Gdk.KEY_Hyper_L, Gdk.KEY_Hyper_R,
             }
+            modifier_keys.update(
+                keyval
+                for keyval in (
+                    getattr(Gdk, f"KEY_{name}", None)
+                    for name in (
+                        "Shift_Lock", "Caps_Lock", "Num_Lock", "Scroll_Lock",
+                        "Mode_switch", "ISO_Lock", "ISO_Level2_Latch",
+                        "ISO_Level3_Shift", "ISO_Level3_Latch", "ISO_Level3_Lock",
+                        "ISO_Level5_Shift", "ISO_Level5_Latch", "ISO_Level5_Lock",
+                        "ISO_Group_Latch", "ISO_Group_Lock", "ISO_Next_Group",
+                        "ISO_Prev_Group", "ISO_First_Group", "ISO_Last_Group",
+                    )
+                )
+                if keyval is not None
+            )
 
             def on_key_press(_widget, event) -> bool:
                 if event.keyval == Gdk.KEY_Escape:
@@ -702,13 +987,23 @@ def run_ui() -> int:
                     accept_button.set_sensitive(False)
                     return True
                 keyval = Gdk.keyval_to_lower(event.keyval)
-                if not Gtk.accelerator_valid(keyval, modifiers):
+                # GTK rejects some valid system shortcuts (for example Ctrl+Tab
+                # and Ctrl+Sys_Req). Accept any named, non-modifier key that GTK
+                # can serialize, while keeping Escape reserved for cancel.
+                key_name = Gdk.keyval_name(keyval)
+                if not key_name or keyval == Gdk.KEY_VoidSymbol:
                     chosen["binding"] = None
-                    captured_label.set_text("That key combination cannot be used")
+                    captured_label.set_text("That key cannot be used")
                     accept_button.set_sensitive(False)
                     return True
-                chosen["binding"] = Gtk.accelerator_name(keyval, modifiers)
-                captured_label.set_text(Gtk.accelerator_get_label(keyval, modifiers))
+                binding = Gtk.accelerator_name(keyval, modifiers)
+                if not binding:
+                    chosen["binding"] = None
+                    captured_label.set_text("That key cannot be used")
+                    accept_button.set_sensitive(False)
+                    return True
+                chosen["binding"] = canonical_shortcut_binding(binding)
+                captured_label.set_text(format_shortcut(chosen["binding"]))
                 accept_button.set_sensitive(True)
                 return True
 
@@ -739,8 +1034,9 @@ def run_ui() -> int:
             self.update_shortcut_label()
             self.update_shortcut_status()
             if committed:
-                self.status_label.set_text(
-                    f"Capture shortcut changed to {format_shortcut(chosen['binding'])}."
+                shortcut = html.escape(format_shortcut(chosen["binding"]))
+                self.status_label.set_markup(
+                    f"Capture shortcut changed to <b>{shortcut}</b>."
                 )
 
         def move_selected(self, direction: int) -> None:
@@ -798,41 +1094,63 @@ def run_ui() -> int:
             self.refresh_library(force=True)
             self.status_label.set_text("Selection cleared. Your screenshot files are still saved.")
 
-        def delete_focused(self, *_args) -> None:
-            path_text = self.focus_path
-            if not path_text or not Path(path_text).is_file():
-                self.status_label.set_text("Select a screenshot row first.")
+        def delete_selected(self, *_args) -> None:
+            paths = [path_text for path_text in self.selected_paths if Path(path_text).is_file()]
+            if not paths:
+                self.status_label.set_text("Select one or more screenshots first.")
                 return
+            self.delete_paths(paths)
+
+        def delete_paths(self, paths: list[str]) -> None:
+            names = [capture_display_name(Path(path_text)) for path_text in paths]
+            count = len(paths)
+            prompt = "Delete this screenshot?" if count == 1 else f"Delete these {count} screenshots?"
             dialog = Gtk.MessageDialog(
                 transient_for=self,
                 modal=True,
                 message_type=Gtk.MessageType.QUESTION,
                 buttons=Gtk.ButtonsType.CANCEL,
-                text="Delete this screenshot?",
+                text=prompt,
             )
-            dialog.format_secondary_text(Path(path_text).name)
+            dialog.format_secondary_text("\n".join(names))
             dialog.add_button("Delete", Gtk.ResponseType.YES)
             response = dialog.run()
             dialog.destroy()
             if response != Gtk.ResponseType.YES:
                 return
-            try:
-                Path(path_text).unlink()
-                self.selected_paths = [p for p in self.selected_paths if p != path_text]
+
+            deleted = []
+            failures = []
+            for path_text in paths:
+                try:
+                    Path(path_text).unlink()
+                    deleted.append(path_text)
+                except OSError as exc:
+                    failures.append(f"{Path(path_text).name}: {exc}")
+
+            if deleted:
+                self.selected_paths = [p for p in self.selected_paths if p not in deleted]
                 state = load_state()
-                state["pending"] = [p for p in state.get("pending", []) if p != path_text]
+                state["pending"] = [p for p in state.get("pending", []) if p not in deleted]
                 save_state(state)
-                self.focus_path = None
-                self.refresh_library(force=True)
+                if self.focus_path in deleted:
+                    self.focus_path = None
+            self.refresh_library(force=True)
+            if failures:
+                self.show_error("Could not delete some screenshots:\n" + "\n".join(failures))
+            elif count == 1:
                 self.status_label.set_text("Screenshot deleted. Existing PDFs are unchanged.")
-            except OSError as exc:
-                self.show_error(f"Could not delete the screenshot: {exc}")
+            else:
+                self.status_label.set_text(
+                    f"{len(deleted)} screenshots deleted. Existing PDFs are unchanged."
+                )
 
         def update_preview(self) -> None:
             count = len(self.selected_paths)
             self.update_side_button_state()
             self.print_button.set_sensitive(count > 0)
             self.print_button.set_label(f"Print selected ({count})")
+            self.delete_selected_button.set_sensitive(count > 0)
             if count == 0:
                 self.preview_image.set_from_icon_name("image-x-generic", Gtk.IconSize.DIALOG)
                 self.layout_label.set_text("Select one to three screenshots to preview the A4 sheet.")
@@ -863,9 +1181,9 @@ def run_ui() -> int:
             for path_text, label in self.name_labels.items():
                 if path_text in self.selected_paths:
                     slot = self.selected_paths.index(path_text) + 1
-                    label.set_text(f"{slot}. {Path(path_text).name}")
+                    label.set_text(f"{slot}. {capture_display_name(Path(path_text))}")
                 else:
-                    label.set_text(Path(path_text).name)
+                    label.set_text(capture_display_name(Path(path_text)))
 
         def print_selected(self, *_args) -> None:
             if not self.selected_paths:
