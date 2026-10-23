@@ -528,7 +528,7 @@ def run_ui() -> int:
             self.search_entry = Gtk.SearchEntry()
             self.search_entry.set_placeholder_text("Search screenshots by name")
             self.search_entry.connect(
-                "search-changed", lambda *_: self.listbox.invalidate_filter()
+                "search-changed", lambda *_: self.refresh_library(force=True)
             )
             library.pack_start(self.search_entry, False, False, 0)
 
@@ -636,6 +636,7 @@ def run_ui() -> int:
             library.pack_start(scroll, True, True, 0)
 
             library_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            library_actions.set_margin_top(12)
             library.pack_start(library_actions, False, False, 0)
             clear_button = Gtk.Button(label="Clear selection")
             clear_button.connect("clicked", self.clear_selection)
@@ -684,7 +685,19 @@ def run_ui() -> int:
         def list_capture_paths(self) -> list[Path]:
             if not CAPTURES_DIR.exists():
                 return []
-            paths = list(CAPTURES_DIR.glob("screen-*.png"))
+            paths = sorted(
+                CAPTURES_DIR.glob("screen-*.png"),
+                key=lambda path: (capture_datetime(path), path.stat().st_mtime_ns),
+                reverse=True,
+            )
+            has_filter = (
+                bool(self.search_entry.get_text().strip())
+                or self.date_from is not None
+                or self.date_to is not None
+            )
+            if not has_filter:
+                return paths
+
             paths_by_text = {str(path): path for path in paths}
             selected = [
                 paths_by_text[path_text]
@@ -692,15 +705,15 @@ def run_ui() -> int:
                 if path_text in paths_by_text
             ]
             selected_text = {str(path) for path in selected}
-            remaining = sorted(
-                (path for path in paths if str(path) not in selected_text),
-                key=lambda path: (capture_datetime(path), path.stat().st_mtime_ns),
-                reverse=True,
-            )
-            return selected + remaining
+            return selected + [path for path in paths if str(path) not in selected_text]
 
         def inventory_key(self, paths: list[Path]) -> tuple:
-            return tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in paths)
+            return tuple(
+                sorted(
+                    (str(path), path.stat().st_mtime_ns, path.stat().st_size)
+                    for path in paths
+                )
+            )
 
         def filter_capture_row(self, row, *_args) -> bool:
             query = self.search_entry.get_text().strip().casefold()
@@ -757,24 +770,20 @@ def run_ui() -> int:
             if self.date_from and self.date_to and self.date_from > self.date_to:
                 self.date_from, self.date_to = self.date_to, self.date_from
             self.update_date_filter_label()
-            self.listbox.invalidate_filter()
+            self.refresh_library(force=True)
             popover.popdown()
 
         def clear_date_filter(self, *_args) -> None:
             self.date_from = None
             self.date_to = None
             self.update_date_filter_label()
-            self.listbox.invalidate_filter()
+            self.refresh_library(force=True)
             for popover in self.date_picker_popovers.values():
                 popover.popdown()
 
         def periodic_refresh(self) -> bool:
             self.refresh_library()
             return True
-
-        def refresh_library_after_selection(self) -> bool:
-            self.refresh_library(force=True)
-            return False
 
         def refresh_library(self, force: bool = False) -> None:
             paths = self.list_capture_paths()
@@ -991,7 +1000,6 @@ def run_ui() -> int:
                     break
             self.listbox.invalidate_filter()
             self.update_preview()
-            GLib.idle_add(self.refresh_library_after_selection)
 
         def update_shortcut_label(self) -> None:
             try:

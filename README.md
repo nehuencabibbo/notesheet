@@ -1,12 +1,14 @@
 # Notesheet
 
-Notesheet captures full-screen images, lets you choose and order up to three, previews their layout on landscape A4, and prints through CUPS or saves a PDF.
+Notesheet captures full-screen images, lets you select up to three, previews their layout on landscape A4, and prints through CUPS or saves a PDF. The order in which you select captures determines their positions on the page.
 
 ## Screenshots
 
-The preview shows three sample captures arranged on an A4 sheet. The print dialog lets you choose a CUPS printer or save the sheet as a PDF.
+The screenshots show the current library and A4 preview, selected captures alongside search results, and the printer or PDF destination dialog.
 
-![Notesheet with three captures in the A4 preview](screenshots/notesheet-preview.png)
+![Notesheet with three selected captures and their A4 preview](screenshots/notesheet-preview.png)
+
+![Selected captures shown above the matching result for an active search](screenshots/notesheet-search-filter.png)
 
 ![Notesheet print and PDF options](screenshots/notesheet-print-options.png)
 
@@ -15,7 +17,7 @@ The preview shows three sample captures arranged on an A4 sheet. The print dialo
 On Ubuntu, install the runtime dependencies:
 
 ```bash
-sudo apt install python3-gi gir1.2-gtk-3.0 python3-pil cups-client xdg-user-dirs
+sudo apt install python3-gi gir1.2-gtk-3.0 python3-pil cups-client xdg-user-dirs libnotify-bin zenity
 ```
 
 Clone the repository, then launch the interface:
@@ -41,7 +43,7 @@ Each capture opens a save dialog before writing the image. Enter an optional nam
 - Captures are saved under `~/Pictures/NoteCaptures/Captures/`.
 - Screenshots are listed newest to oldest. Use the search field to filter by custom name or file name. Use the rename icon on a screenshot row to change its name; leave the name blank to use its capture timestamp.
 - Use the **From** and **To** calendar pickers to filter by an inclusive date range. Leave either limit empty for an open-ended range, or choose the same date in both pickers to show one day. Use **Clear** to show all dates again.
-- Select one to three screenshots by clicking their checkbox or the thumbnail and details area. Selected screenshots stay highlighted in blue with their checkboxes marked, appear at the top in selection order, and remain visible regardless of active search or date filters. Their selection order determines their positions on the page.
+- Select one to three screenshots by clicking their checkbox or the thumbnail and details area. Selected screenshots stay highlighted in blue with their checkboxes marked and remain visible regardless of active search or date filters. Selecting a screenshot does not move it; when a search or date filter is applied, selected screenshots appear at the top in selection order. Their selection order determines their positions on the page.
 - The A4 landscape preview updates as the selection changes. **Print selected** offers the system default printer, other CUPS queues, and **Save PDF…**. Created sheets are also kept under `~/Pictures/NoteCaptures/Sheets/`.
 - Screenshots remain in the library after printing. **Delete selection** removes all checked screenshots after confirmation.
 
