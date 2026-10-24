@@ -66,4 +66,4 @@ python3 notesheet.py remove-shortcut
 
 ## Page layout
 
-The page is A4 landscape at 300 dpi, with 5 mm margins and 2 mm gaps. Each screenshot keeps its aspect ratio and targets up to 180 mm wide. A 16:9 desktop image fits at about 176 × 99 mm in the three-capture layout.
+The page is A4 landscape at 300 dpi, with 5 mm margins and no gaps between screenshots. Thin black cut guides appear only where screenshots touch. Each screenshot keeps its aspect ratio and targets up to 180 mm wide. A 16:9 desktop image fits at about 176 × 99 mm in the three-capture layout.

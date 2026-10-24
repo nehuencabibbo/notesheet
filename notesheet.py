@@ -15,7 +15,7 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 APP_NAME = "Notesheet"
@@ -29,7 +29,7 @@ SHELL_KEYS_SCHEMA = "org.gnome.shell.keybindings"
 A4_WIDTH_MM = 297.0
 A4_HEIGHT_MM = 210.0
 PAGE_MARGIN_MM = 5.0
-GAP_MM = 2.0
+GAP_MM = 0.0
 TARGET_WIDTH_MM = 180.0
 OUTPUT_DPI = 300
 PREVIEW_WIDTH = 620
@@ -306,6 +306,8 @@ def compose_page(image_paths: list[str], dpi: int = OUTPUT_DPI) -> Image.Image:
         image_heights = [round((image_w_mm / aspect) * px_per_mm) for aspect in aspects]
 
         page = Image.new("RGB", (page_w, page_h), "white")
+        seam_width = max(1, round(0.3 * px_per_mm))
+        seams: list[tuple[tuple[int, int], tuple[int, int]]] = []
         if len(sources) == 1:
             x = (page_w - image_w) // 2
             y = (page_h - image_heights[0]) // 2
@@ -322,6 +324,10 @@ def compose_page(image_paths: list[str], dpi: int = OUTPUT_DPI) -> Image.Image:
                     (image_w, image_heights[index]), Image.Resampling.LANCZOS
                 )
                 page.paste(resized, (margin, y))
+            first_bottom = left_positions[0][1] + image_heights[0]
+            second_y = left_positions[1][1]
+            if first_bottom == second_y:
+                seams.append(((margin, second_y), (margin + image_w - 1, second_y)))
 
             if len(sources) == 3:
                 turned = sources[2].resize(
@@ -330,6 +336,15 @@ def compose_page(image_paths: list[str], dpi: int = OUTPUT_DPI) -> Image.Image:
                 right_x = margin + image_w + gap
                 right_y = (page_h - turned.height) // 2
                 page.paste(turned, (right_x, right_y))
+                left_bottom = left_positions[1][1] + image_heights[1]
+                shared_top = max(first_y, right_y)
+                shared_bottom = min(left_bottom, right_y + turned.height)
+                if right_x == margin + image_w and shared_top < shared_bottom:
+                    seams.append(((right_x, shared_top), (right_x, shared_bottom - 1)))
+        if seams:
+            draw = ImageDraw.Draw(page)
+            for start, end in seams:
+                draw.line((start, end), fill="black", width=seam_width)
         return page
     finally:
         for source in sources:
