@@ -1307,6 +1307,16 @@ def run_ui() -> int:
                 renderer.set_property("cell-background", "#16803c")
 
         def on_folder_tree_button_press(self, _widget, event) -> bool:
+            if event.button == 3:
+                hit = self.folder_tree.get_path_at_pos(int(event.x), int(event.y))
+                folder_id = None
+                if hit:
+                    tree_path = hit[0]
+                    tree_iter = self.folder_store.get_iter(tree_path)
+                    folder_id = self.folder_store.get_value(tree_iter, 1)
+                    self.folder_tree.get_selection().select_path(tree_path)
+                self.show_folder_context_menu(folder_id, event)
+                return True
             if event.button != 1:
                 return False
             hit = self.folder_tree.get_path_at_pos(int(event.x), int(event.y))
@@ -1328,6 +1338,43 @@ def run_ui() -> int:
             self.folder_tree.get_selection().select_path(tree_path)
             self.rename_folder(folder_id=folder_id)
             return True
+
+        def show_folder_context_menu(self, folder_id: str | None, event) -> None:
+            if folder_id == ALL_FOLDERS_ID:
+                parent_folder = ""
+            elif folder_id and folder_id.startswith(FOLDER_ID_PREFIX):
+                parent_folder = folder_id[len(FOLDER_ID_PREFIX) :]
+            elif self.active_folder_id.startswith(FOLDER_ID_PREFIX):
+                parent_folder = self.active_folder_id[len(FOLDER_ID_PREFIX) :]
+            else:
+                parent_folder = ""
+
+            menu = Gtk.Menu()
+            create_label = "New subfolder…" if parent_folder else "New folder…"
+            create_item = Gtk.MenuItem.new_with_label(create_label)
+            create_item.connect(
+                "activate",
+                lambda *_args: self.create_folder(parent_folder=parent_folder),
+            )
+            menu.append(create_item)
+
+            if folder_id and folder_id.startswith(FOLDER_ID_PREFIX):
+                menu.append(Gtk.SeparatorMenuItem())
+                rename_item = Gtk.MenuItem.new_with_label("Rename folder…")
+                rename_item.connect(
+                    "activate",
+                    lambda *_args: self.rename_folder(folder_id=folder_id),
+                )
+                menu.append(rename_item)
+                delete_item = Gtk.MenuItem.new_with_label("Delete folder…")
+                delete_item.connect(
+                    "activate",
+                    lambda *_args: self.delete_folder(folder_id=folder_id),
+                )
+                menu.append(delete_item)
+
+            menu.show_all()
+            menu.popup(None, None, None, None, event.button, event.time)
 
         def on_folder_tree_query_tooltip(
             self, _widget, x: int, y: int, keyboard_mode: bool, tooltip
@@ -1427,10 +1474,14 @@ def run_ui() -> int:
             self.set_drag_destination_folder(None)
             context.finish(succeeded, False, time)
 
-        def create_folder(self, *_args) -> None:
-            if self.active_folder_id.startswith(FOLDER_ID_PREFIX):
+        def create_folder(
+            self, *_args, parent_folder: str | None = None
+        ) -> None:
+            if parent_folder is None and self.active_folder_id.startswith(
+                FOLDER_ID_PREFIX
+            ):
                 parent_folder = self.active_folder_id[len(FOLDER_ID_PREFIX) :]
-            else:
+            elif parent_folder is None:
                 parent_folder = ""
             created = request_new_capture_folder(Gtk, self, parent_folder)
             if created is None:
@@ -1566,10 +1617,13 @@ def run_ui() -> int:
                     f"Renamed folder {relative_folder} to {new_relative_folder}."
                 )
 
-        def delete_folder(self, *_args) -> None:
-            if not self.active_folder_id.startswith(FOLDER_ID_PREFIX):
+        def delete_folder(
+            self, *_args, folder_id: str | None = None
+        ) -> None:
+            folder_id = folder_id or self.active_folder_id
+            if not folder_id.startswith(FOLDER_ID_PREFIX):
                 return
-            relative_folder = self.active_folder_id[len(FOLDER_ID_PREFIX) :]
+            relative_folder = folder_id[len(FOLDER_ID_PREFIX) :]
             try:
                 target = capture_folder_path(relative_folder)
             except (OSError, ValueError) as exc:
