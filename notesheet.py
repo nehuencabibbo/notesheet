@@ -905,6 +905,8 @@ def run_ui() -> int:
             self.drag_destination_folder_id: str | None = None
             self.folder_paths: tuple[str, ...] = ()
             self.folder_items: dict[str, object] = {}
+            self.folder_options_popover = None
+            self.folder_options_folder_id: str | None = None
             self.updating_folder_tree = False
             self.date_from: date | None = None
             self.date_to: date | None = None
@@ -1361,12 +1363,45 @@ def run_ui() -> int:
             if folder_id == ALL_FOLDERS_ID:
                 return True
             self.folder_tree.get_selection().select_path(hit[0])
-            self.show_folder_context_menu(folder_id, event, popup_button=0)
+            self.show_folder_context_menu(folder_id, event)
             return True
 
-        def show_folder_context_menu(
-            self, folder_id: str | None, event, popup_button: int | None = None
-        ) -> None:
+        def close_folder_options_popover(self) -> None:
+            popover = self.folder_options_popover
+            self.folder_options_popover = None
+            self.folder_options_folder_id = None
+            if popover is not None:
+                popover.popdown()
+                popover.destroy()
+
+        def on_folder_options_popover_closed(self, popover) -> None:
+            if self.folder_options_popover is popover:
+                self.folder_options_popover = None
+                self.folder_options_folder_id = None
+                GLib.idle_add(self.destroy_folder_options_popover, popover)
+
+        @staticmethod
+        def destroy_folder_options_popover(popover) -> bool:
+            popover.destroy()
+            return GLib.SOURCE_REMOVE
+
+        def activate_folder_option(self, popover, action) -> None:
+            if self.folder_options_popover is popover:
+                self.folder_options_popover = None
+                self.folder_options_folder_id = None
+            popover.popdown()
+            popover.destroy()
+            action()
+
+        def show_folder_context_menu(self, folder_id: str | None, event) -> None:
+            if (
+                self.folder_options_popover is not None
+                and self.folder_options_folder_id == folder_id
+            ):
+                self.close_folder_options_popover()
+                return
+            self.close_folder_options_popover()
+
             if folder_id == ALL_FOLDERS_ID:
                 parent_folder = ""
             elif folder_id and folder_id.startswith(FOLDER_ID_PREFIX):
@@ -1376,39 +1411,64 @@ def run_ui() -> int:
             else:
                 parent_folder = ""
 
-            menu = Gtk.Menu()
-            create_label = "New subfolder…" if parent_folder else "New folder…"
-            create_item = Gtk.MenuItem.new_with_label(create_label)
-            create_item.connect(
-                "activate",
-                lambda *_args: self.create_folder(parent_folder=parent_folder),
+            popover = Gtk.Popover.new(self.folder_tree)
+            popover.set_modal(True)
+            popover.set_position(Gtk.PositionType.RIGHT)
+            popover.get_style_context().add_class("menu")
+            pointing_to = Gdk.Rectangle()
+            pointing_to.x = int(event.x)
+            pointing_to.y = int(event.y)
+            pointing_to.width = 1
+            pointing_to.height = 1
+            popover.set_pointing_to(pointing_to)
+            popover.connect(
+                "closed", self.on_folder_options_popover_closed
             )
-            menu.append(create_item)
+
+            content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            content.set_border_width(6)
+            popover.add(content)
+
+            def add_option(label: str, action) -> None:
+                button = Gtk.Button()
+                button.set_relief(Gtk.ReliefStyle.NONE)
+                button.set_halign(Gtk.Align.FILL)
+                button.set_hexpand(True)
+                option_label = Gtk.Label(label=label)
+                option_label.set_xalign(0)
+                button.add(option_label)
+                button.connect(
+                    "clicked",
+                    lambda *_args: self.activate_folder_option(popover, action),
+                )
+                content.pack_start(button, False, False, 0)
+
+            create_label = "New subfolder…" if parent_folder else "New folder…"
+            add_option(
+                create_label,
+                lambda: self.create_folder(parent_folder=parent_folder),
+            )
 
             if folder_id and folder_id.startswith(FOLDER_ID_PREFIX):
-                menu.append(Gtk.SeparatorMenuItem())
-                rename_item = Gtk.MenuItem.new_with_label("Rename folder…")
-                rename_item.connect(
-                    "activate",
-                    lambda *_args: self.rename_folder(folder_id=folder_id),
+                content.pack_start(
+                    Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL),
+                    False,
+                    False,
+                    2,
                 )
-                menu.append(rename_item)
-                delete_item = Gtk.MenuItem.new_with_label("Delete folder…")
-                delete_item.connect(
-                    "activate",
-                    lambda *_args: self.delete_folder(folder_id=folder_id),
+                add_option(
+                    "Rename folder…",
+                    lambda: self.rename_folder(folder_id=folder_id),
                 )
-                menu.append(delete_item)
+                add_option(
+                    "Delete folder…",
+                    lambda: self.delete_folder(folder_id=folder_id),
+                )
 
-            menu.show_all()
-            menu.popup(
-                None,
-                None,
-                None,
-                None,
-                event.button if popup_button is None else popup_button,
-                event.time,
-            )
+            self.folder_options_popover = popover
+            self.folder_options_folder_id = folder_id
+            popover.show_all()
+            popover.popup()
 
         def on_folder_tree_query_tooltip(
             self, _widget, x: int, y: int, keyboard_mode: bool, tooltip
