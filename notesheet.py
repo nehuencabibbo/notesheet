@@ -318,11 +318,14 @@ def add_screenshot_preview(
     Gtk,
     content,
     *,
+    dialog=None,
     image_path: Path | str | None = None,
     pixbuf=None,
     description: str | None = None,
 ) -> None:
     """Add a button that reveals a scaled screenshot in the current dialog."""
+    max_preview_width = 460
+    max_preview_height = 260
     preview = None
     try:
         import gi
@@ -332,12 +335,16 @@ def add_screenshot_preview(
 
         if pixbuf is None and image_path is not None:
             preview = GdkPixbuf.Pixbuf.new_from_file_at_scale(
-                str(image_path), 720, 420, True
+                str(image_path), max_preview_width, max_preview_height, True
             )
         elif pixbuf is not None:
             width = pixbuf.get_width()
             height = pixbuf.get_height()
-            scale = min(1.0, 720 / width, 420 / height)
+            scale = min(
+                1.0,
+                max_preview_width / width,
+                max_preview_height / height,
+            )
             if scale < 1.0:
                 preview = pixbuf.scale_simple(
                     max(1, round(width * scale)),
@@ -369,22 +376,50 @@ def add_screenshot_preview(
     preview_frame.set_shadow_type(Gtk.ShadowType.IN)
     preview_frame.add(preview_image)
     preview_box.pack_start(preview_frame, False, False, 0)
-    preview_frame.show_all()
-    preview_frame.set_no_show_all(True)
-    preview_frame.hide()
-    content.pack_start(preview_box, False, False, 0)
+    preview_revealer = Gtk.Revealer()
+    preview_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+    preview_revealer.set_transition_duration(120)
+    preview_revealer.add(preview_box)
+    preview_revealer.set_reveal_child(False)
+    preview_revealer.show_all()
+    preview_revealer.set_reveal_child(False)
+    content.pack_start(preview_revealer, False, False, 0)
+
+    compact_size = None
+
+    def restore_compact_dialog_size(revealer, _property) -> None:
+        if (
+            dialog is not None
+            and compact_size is not None
+            and not revealer.get_child_revealed()
+        ):
+            dialog.resize(*compact_size)
+
+    preview_revealer.connect(
+        "notify::child-revealed", restore_compact_dialog_size
+    )
 
     def toggle_preview(button) -> None:
-        is_visible = preview_frame.get_visible()
-        preview_frame.set_visible(not is_visible)
+        nonlocal compact_size
+        show_preview = not preview_revealer.get_reveal_child()
+        if show_preview and dialog is not None and compact_size is None:
+            compact_size = dialog.get_size()
+        preview_revealer.set_reveal_child(show_preview)
         button.set_label(
-            "Hide screenshot preview" if not is_visible else "Show screenshot preview"
+            "Hide screenshot preview"
+            if show_preview
+            else "Show screenshot preview"
         )
 
     preview_button.connect("clicked", toggle_preview)
 
 
-def request_new_capture_folder(Gtk, parent=None, initial_parent: str = "") -> str | None:
+def request_new_capture_folder(
+    Gtk,
+    parent=None,
+    initial_parent: str = "",
+    exclude_folder: str | None = None,
+) -> str | None:
     dialog = Gtk.Dialog(title="Create folder", modal=True)
     if parent is not None:
         dialog.set_transient_for(parent)
@@ -402,6 +437,13 @@ def request_new_capture_folder(Gtk, parent=None, initial_parent: str = "") -> st
     parent_combo = Gtk.ComboBoxText()
     parent_combo.append(ROOT_FOLDER_ID, "Main folder")
     existing_folders = capture_folder_paths()
+    if exclude_folder:
+        existing_folders = [
+            folder
+            for folder in existing_folders
+            if folder != exclude_folder
+            and not folder.startswith(exclude_folder + "/")
+        ]
     valid_parent = initial_parent if initial_parent in existing_folders else ""
     for folder in existing_folders:
         parent_combo.append(folder_choice_id(folder), folder_choice_label(folder))
@@ -491,7 +533,11 @@ def request_capture_destination(
     name_entry.set_activates_default(True)
     content.pack_start(name_entry, False, False, 0)
     add_screenshot_preview(
-        Gtk, content, pixbuf=preview_pixbuf, description="Preview of this capture"
+        Gtk,
+        content,
+        dialog=dialog,
+        pixbuf=preview_pixbuf,
+        description="Preview of this capture",
     )
 
     dialog.show_all()
@@ -505,11 +551,15 @@ def request_capture_destination(
     return result
 
 
-def _create_folder_from_capture_dialog(Gtk, dialog, folder_combo, refresh_folders) -> None:
-    parent_folder = folder_choice_relative(folder_combo.get_active_id())
-    created = request_new_capture_folder(Gtk, dialog, parent_folder)
+def _create_folder_from_capture_dialog(
+    Gtk, dialog, folder_combo, refresh_folders, exclude_folder: str | None = None
+) -> None:
+    selected_folder = folder_choice_relative(folder_combo.get_active_id())
+    created = request_new_capture_folder(
+        Gtk, dialog, selected_folder, exclude_folder=exclude_folder
+    )
     if created is not None:
-        refresh_folders(created)
+        refresh_folders(selected_folder)
 
 
 def request_capture_folder_choice(
@@ -519,6 +569,7 @@ def request_capture_folder_choice(
     initial_folder: str = "",
     preview_path: Path | str | None = None,
     preview_description: str | None = None,
+    exclude_folder: str | None = None,
 ) -> str | None:
     dialog = Gtk.Dialog(title=title, modal=True)
     if parent is not None:
@@ -542,6 +593,13 @@ def request_capture_folder_choice(
         folder_combo.remove_all()
         folder_combo.append(ROOT_FOLDER_ID, "Main folder")
         folders = capture_folder_paths()
+        if exclude_folder:
+            folders = [
+                folder
+                for folder in folders
+                if folder != exclude_folder
+                and not folder.startswith(exclude_folder + "/")
+            ]
         for folder in folders:
             folder_combo.append(folder_choice_id(folder), folder_choice_label(folder))
         selected = selected_folder if selected_folder in folders else ""
@@ -553,7 +611,7 @@ def request_capture_folder_choice(
     new_folder_button.connect(
         "clicked",
         lambda *_args: _create_folder_from_capture_dialog(
-            Gtk, dialog, folder_combo, refresh_folders
+            Gtk, dialog, folder_combo, refresh_folders, exclude_folder
         ),
     )
     folder_row.pack_start(new_folder_button, False, False, 0)
@@ -562,6 +620,7 @@ def request_capture_folder_choice(
         add_screenshot_preview(
             Gtk,
             content,
+            dialog=dialog,
             image_path=preview_path,
             description=preview_description,
         )
@@ -881,7 +940,7 @@ def run_ui() -> int:
             folder_title = Gtk.Label(label="Folders")
             folder_title.set_xalign(0)
             folder_panel.pack_start(folder_title, False, False, 0)
-            self.folder_store = Gtk.TreeStore(str, str)
+            self.folder_store = Gtk.TreeStore(str, str, bool)
             self.folder_tree = Gtk.TreeView(model=self.folder_store)
             self.folder_tree.set_headers_visible(False)
             folder_renderer = Gtk.CellRendererText()
@@ -889,6 +948,26 @@ def run_ui() -> int:
             folder_column.set_expand(True)
             folder_column.set_cell_data_func(folder_renderer, self.style_folder_cell)
             self.folder_tree.append_column(folder_column)
+            self.folder_action_renderer = Gtk.CellRendererPixbuf()
+            self.folder_action_renderer.set_property(
+                "icon-name", "document-edit-symbolic"
+            )
+            self.folder_action_column = Gtk.TreeViewColumn(
+                "", self.folder_action_renderer
+            )
+            self.folder_action_column.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
+            self.folder_action_column.set_fixed_width(30)
+            self.folder_action_column.set_cell_data_func(
+                self.folder_action_renderer, self.style_folder_action_cell
+            )
+            self.folder_tree.append_column(self.folder_action_column)
+            self.folder_tree.connect(
+                "button-press-event", self.on_folder_tree_button_press
+            )
+            self.folder_tree.set_has_tooltip(True)
+            self.folder_tree.connect(
+                "query-tooltip", self.on_folder_tree_query_tooltip
+            )
             self.folder_tree.get_selection().connect(
                 "changed", self.on_folder_selected
             )
@@ -1117,7 +1196,7 @@ def run_ui() -> int:
             self.folder_store.clear()
             self.folder_items.clear()
             all_iter = self.folder_store.append(
-                None, ("All screenshots", ALL_FOLDERS_ID)
+                None, ("All screenshots", ALL_FOLDERS_ID, False)
             )
             self.folder_items[ALL_FOLDERS_ID] = all_iter
             for folder in folders:
@@ -1129,7 +1208,11 @@ def run_ui() -> int:
                 )
                 folder_iter = self.folder_store.append(
                     parent_iter,
-                    (PurePosixPath(folder).name, f"{FOLDER_ID_PREFIX}{folder}"),
+                    (
+                        PurePosixPath(folder).name,
+                        f"{FOLDER_ID_PREFIX}{folder}",
+                        True,
+                    ),
                 )
                 self.folder_items[f"{FOLDER_ID_PREFIX}{folder}"] = folder_iter
 
@@ -1200,6 +1283,49 @@ def run_ui() -> int:
                 renderer.set_property("cell-background", "#16803c")
                 renderer.set_property("foreground", "#ffffff")
 
+        def style_folder_action_cell(
+            self, _column, renderer, model, tree_iter, _data=None
+        ) -> None:
+            folder_id = model.get_value(tree_iter, 1)
+            renderer.set_property("visible", model.get_value(tree_iter, 2))
+            is_drop_target = folder_id == self.drag_destination_folder_id
+            renderer.set_property("cell-background-set", is_drop_target)
+            if is_drop_target:
+                renderer.set_property("cell-background", "#16803c")
+
+        def on_folder_tree_button_press(self, _widget, event) -> bool:
+            if event.button != 1:
+                return False
+            hit = self.folder_tree.get_path_at_pos(int(event.x), int(event.y))
+            if not hit:
+                return False
+            tree_path, column = hit[0], hit[1]
+            if column != self.folder_action_column:
+                return False
+            tree_iter = self.folder_store.get_iter(tree_path)
+            folder_id = self.folder_store.get_value(tree_iter, 1)
+            if folder_id == ALL_FOLDERS_ID:
+                return True
+            self.folder_tree.get_selection().select_path(tree_path)
+            self.rename_folder(folder_id=folder_id)
+            return True
+
+        def on_folder_tree_query_tooltip(
+            self, _widget, x: int, y: int, keyboard_mode: bool, tooltip
+        ) -> bool:
+            if keyboard_mode:
+                return False
+            hit = self.folder_tree.get_path_at_pos(x, y)
+            if not hit or hit[1] != self.folder_action_column:
+                return False
+            tree_iter = self.folder_store.get_iter(hit[0])
+            folder_id = self.folder_store.get_value(tree_iter, 1)
+            if folder_id == ALL_FOLDERS_ID:
+                return False
+            folder_name = self.folder_store.get_value(tree_iter, 0)
+            tooltip.set_text(f"Rename {folder_name}")
+            return True
+
         def set_drag_destination_folder(self, folder_id: str | None) -> None:
             if self.drag_destination_folder_id == folder_id:
                 return
@@ -1259,8 +1385,135 @@ def run_ui() -> int:
             if created is None:
                 return
             self.refresh_library(force=True)
-            self.select_folder(f"{FOLDER_ID_PREFIX}{created}")
             self.status_label.set_text(f"Created folder {created}.")
+
+        def rename_folder(
+            self, *_args, folder_id: str | None = None
+        ) -> None:
+            folder_id = folder_id or self.active_folder_id
+            if not folder_id.startswith(FOLDER_ID_PREFIX):
+                return
+            relative_folder = folder_id[len(FOLDER_ID_PREFIX) :]
+            try:
+                folder_path = capture_folder_path(relative_folder)
+            except (OSError, ValueError) as exc:
+                self.show_error(f"Could not access the folder: {exc}")
+                self.refresh_library(force=True)
+                return
+            if not folder_path.is_dir():
+                self.show_error("This folder is no longer available.")
+                self.refresh_library(force=True)
+                return
+
+            dialog = Gtk.Dialog(title="Rename folder", transient_for=self, modal=True)
+            dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+            dialog.add_button("Rename", Gtk.ResponseType.ACCEPT)
+            dialog.set_default_response(Gtk.ResponseType.ACCEPT)
+            dialog.set_default_size(430, 160)
+            content = dialog.get_content_area()
+            content.set_border_width(16)
+            content.set_spacing(10)
+            folder_label = Gtk.Label(label=f"Folder: {relative_folder}")
+            folder_label.set_xalign(0)
+            folder_label.set_line_wrap(True)
+            content.pack_start(folder_label, False, False, 0)
+            name_label = Gtk.Label(label="New folder name")
+            name_label.set_xalign(0)
+            content.pack_start(name_label, False, False, 0)
+            name_entry = Gtk.Entry()
+            name_entry.set_text(folder_path.name)
+            name_entry.set_max_length(100)
+            name_entry.set_activates_default(True)
+            content.pack_start(name_entry, False, False, 0)
+            dialog.show_all()
+            name_entry.select_region(0, -1)
+            name_entry.grab_focus()
+            response = dialog.run()
+            requested_name = name_entry.get_text() if response == Gtk.ResponseType.ACCEPT else None
+            dialog.destroy()
+            if requested_name is None:
+                return
+
+            try:
+                new_name = safe_folder_name(requested_name)
+            except ValueError as exc:
+                self.show_error(str(exc))
+                return
+            new_path = folder_path.with_name(new_name)
+            if new_path == folder_path:
+                return
+            if new_path.exists() or new_path.is_symlink():
+                self.show_error("A folder with that name already exists here.")
+                return
+            new_relative_folder = new_path.relative_to(CAPTURES_DIR).as_posix()
+            new_folder_id = f"{FOLDER_ID_PREFIX}{new_relative_folder}"
+            try:
+                capture_folder_path(new_relative_folder)
+                folder_path.rename(new_path)
+            except (OSError, ValueError) as exc:
+                self.show_error(f"Could not rename the folder: {exc}")
+                self.refresh_library(force=True)
+                return
+
+            def renamed_capture_path(path_text: str) -> str:
+                try:
+                    suffix = Path(path_text).relative_to(folder_path)
+                except ValueError:
+                    return path_text
+                return str(new_path / suffix)
+
+            self.selected_paths = [
+                renamed_capture_path(path_text) for path_text in self.selected_paths
+            ]
+            if self.focus_path is not None:
+                self.focus_path = renamed_capture_path(self.focus_path)
+
+            history_error = None
+            try:
+                state = load_state()
+
+                def renamed_folder_value(value: str) -> str:
+                    if value == relative_folder:
+                        return new_relative_folder
+                    if value.startswith(relative_folder + "/"):
+                        return new_relative_folder + value[len(relative_folder) :]
+                    return value
+
+                def renamed_saved_path(path_text: str) -> str:
+                    return renamed_capture_path(path_text)
+
+                state["capture_folder"] = renamed_folder_value(
+                    state.get("capture_folder") or ""
+                )
+                state["pending"] = [
+                    renamed_saved_path(path_text)
+                    for path_text in state.get("pending", [])
+                ]
+                for sheet in state.get("sheets", []):
+                    sheet["images"] = [
+                        renamed_saved_path(path_text)
+                        for path_text in sheet.get("images", [])
+                    ]
+                save_state(state)
+            except Exception as exc:
+                history_error = str(exc)
+
+            self.active_folder_id = new_folder_id
+            self.refresh_library(force=True)
+            self.select_folder(new_folder_id)
+            new_iter = self.folder_items.get(new_folder_id)
+            if new_iter is not None:
+                self.folder_tree.expand_row(
+                    self.folder_store.get_path(new_iter), False
+                )
+            if history_error:
+                self.show_error(
+                    f"The folder was renamed, but its saved history could not be updated: {history_error}"
+                )
+            else:
+                self.status_label.set_text(
+                    f"Renamed folder {relative_folder} to {new_relative_folder}."
+                )
 
         def delete_folder(self, *_args) -> None:
             if not self.active_folder_id.startswith(FOLDER_ID_PREFIX):
@@ -1277,21 +1530,52 @@ def run_ui() -> int:
                 self.refresh_library(force=True)
                 return
 
+            contents = sorted(
+                (
+                    path
+                    for path in target.rglob("*")
+                    if path.is_symlink() or not path.is_dir()
+                ),
+                key=lambda path: path.as_posix(),
+            )
             screenshots = list(target.rglob("screen-*.png"))
+            subfolder_count = sum(
+                1 for path in target.rglob("*") if path.is_dir() and not path.is_symlink()
+            )
             dialog = Gtk.MessageDialog(
                 transient_for=self,
                 modal=True,
                 message_type=Gtk.MessageType.WARNING,
                 buttons=Gtk.ButtonsType.CANCEL,
-                text=f"Delete “{relative_folder}” and all its contents?",
+                text=f"Delete folder “{relative_folder}”?",
             )
-            dialog.format_secondary_text(
-                f"This permanently deletes {len(screenshots)} screenshot(s), all subfolders, "
-                "and any other files inside this folder."
-            )
-            dialog.add_button("Delete folder", Gtk.ResponseType.YES)
+            if contents:
+                dialog.format_secondary_text(
+                    f"This folder contains {len(contents)} file(s) and "
+                    f"{subfolder_count} subfolder(s). You can move all files to another "
+                    "folder first, or delete them permanently."
+                )
+                dialog.add_button("Move files…", Gtk.ResponseType.APPLY)
+            else:
+                dialog.format_secondary_text(
+                    f"This permanently deletes {subfolder_count} empty subfolder(s)."
+                )
+            dialog.add_button("Delete folder and contents", Gtk.ResponseType.YES)
             response = dialog.run()
             dialog.destroy()
+            if response == Gtk.ResponseType.APPLY:
+                destination = request_capture_folder_choice(
+                    Gtk,
+                    self,
+                    "Move folder contents",
+                    exclude_folder=relative_folder,
+                )
+                if destination is None:
+                    return
+                self.move_folder_contents_and_delete(
+                    relative_folder, destination
+                )
+                return
             if response != Gtk.ResponseType.YES:
                 return
 
@@ -1339,6 +1623,142 @@ def run_ui() -> int:
             else:
                 self.status_label.set_text(
                     f"Deleted folder {relative_folder} and all its contents."
+                )
+
+        def move_folder_contents_and_delete(
+            self, relative_folder: str, destination: str
+        ) -> None:
+            try:
+                source_dir = capture_folder_path(relative_folder)
+                destination_dir = capture_folder_path(destination)
+            except (OSError, ValueError) as exc:
+                self.show_error(f"Could not access a folder: {exc}")
+                self.refresh_library(force=True)
+                return
+            if destination == relative_folder or destination.startswith(
+                relative_folder + "/"
+            ):
+                self.show_error("Choose a destination outside the folder being deleted.")
+                return
+            if not source_dir.is_dir() or not destination_dir.is_dir():
+                self.show_error("The source or destination folder no longer exists.")
+                self.refresh_library(force=True)
+                return
+
+            try:
+                files = sorted(
+                    (
+                        path
+                        for path in source_dir.rglob("*")
+                        if path.is_symlink() or not path.is_dir()
+                    ),
+                    key=lambda path: path.as_posix(),
+                )
+            except OSError as exc:
+                self.show_error(f"Could not read the folder contents: {exc}")
+                return
+
+            moves: list[tuple[Path, Path]] = []
+            conflicts = []
+            reserved_targets = set()
+            for source in files:
+                target = destination_dir / source.name
+                target_key = target.name.casefold()
+                if (
+                    target.exists()
+                    or target.is_symlink()
+                    or target_key in reserved_targets
+                ):
+                    conflicts.append(source.name)
+                else:
+                    reserved_targets.add(target_key)
+                    moves.append((source, target))
+            if conflicts:
+                names = "\n".join(sorted(set(conflicts)))
+                self.show_error(
+                    "Could not move the files because the destination already has "
+                    f"matching names:\n{names}\nNo files were moved. Choose another folder."
+                )
+                return
+
+            moved: list[tuple[Path, Path]] = []
+            try:
+                for source, target in moves:
+                    source.rename(target)
+                    moved.append((source, target))
+            except OSError as exc:
+                rollback_errors = []
+                for source, target in reversed(moved):
+                    try:
+                        target.rename(source)
+                    except OSError as rollback_exc:
+                        rollback_errors.append(f"{target.name}: {rollback_exc}")
+                self.refresh_library(force=True)
+                message = f"Could not move the folder contents: {exc}"
+                if rollback_errors:
+                    message += "\nSome files could not be restored:\n" + "\n".join(
+                        rollback_errors
+                    )
+                self.show_error(message)
+                return
+
+            moved_paths = {str(source): str(target) for source, target in moved}
+            self.selected_paths = [
+                moved_paths.get(path_text, path_text)
+                for path_text in self.selected_paths
+            ]
+            if self.focus_path is not None:
+                self.focus_path = moved_paths.get(self.focus_path, self.focus_path)
+
+            cleanup_error = None
+            try:
+                shutil.rmtree(source_dir)
+            except OSError as exc:
+                cleanup_error = str(exc)
+
+            history_error = None
+            try:
+                state = load_state()
+                state["pending"] = [
+                    moved_paths.get(path_text, path_text)
+                    for path_text in state.get("pending", [])
+                ]
+                for sheet in state.get("sheets", []):
+                    sheet["images"] = [
+                        moved_paths.get(path_text, path_text)
+                        for path_text in sheet.get("images", [])
+                    ]
+                last_capture_folder = state.get("capture_folder") or ""
+                if isinstance(last_capture_folder, str) and (
+                    last_capture_folder == relative_folder
+                    or last_capture_folder.startswith(relative_folder + "/")
+                ):
+                    state["capture_folder"] = ""
+                save_state(state)
+            except Exception as exc:
+                history_error = str(exc)
+
+            self.active_folder_id = (
+                ALL_FOLDERS_ID
+                if not destination
+                else f"{FOLDER_ID_PREFIX}{destination}"
+            )
+            self.refresh_library(force=True)
+            self.select_folder(self.active_folder_id)
+            issues = []
+            if cleanup_error:
+                issues.append(f"The folder could not be fully removed: {cleanup_error}")
+            if history_error:
+                issues.append(f"The saved history could not be updated: {history_error}")
+            if issues:
+                self.show_error(
+                    "The files were moved, but some cleanup failed:\n" + "\n".join(issues)
+                )
+            else:
+                destination_label = destination or "Main folder"
+                self.status_label.set_text(
+                    f"Moved {len(moved)} file(s) to {destination_label} and deleted "
+                    f"folder {relative_folder}."
                 )
 
         def list_capture_paths(self) -> list[Path]:
@@ -1637,7 +2057,11 @@ def run_ui() -> int:
             name_entry.set_activates_default(True)
             content.pack_start(name_entry, False, False, 0)
             add_screenshot_preview(
-                Gtk, content, image_path=path, description=path.name
+                Gtk,
+                content,
+                dialog=dialog,
+                image_path=path,
+                description=path.name,
             )
             dialog.show_all()
             name_entry.grab_focus()
