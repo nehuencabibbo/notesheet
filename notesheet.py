@@ -865,10 +865,9 @@ def run_ui() -> int:
                 name.set_xalign(0)
                 text_box.pack_start(name, False, False, 0)
                 try:
-                    with Image.open(path) as shot:
-                        detail = f"{shot.width} × {shot.height} px"
-                except Exception:
-                    detail = "Image unavailable"
+                    detail = capture_datetime(path).strftime("%Y-%m-%d %H:%M:%S")
+                except OSError:
+                    detail = "Capture time unavailable"
                 details = Gtk.Label(label=detail)
                 details.set_xalign(0)
                 details.get_style_context().add_class("dim-label")
