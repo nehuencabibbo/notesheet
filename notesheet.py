@@ -1291,14 +1291,21 @@ def run_ui() -> int:
             return None
 
         def style_folder_cell(self, _column, renderer, model, tree_iter, _data=None) -> None:
+            folder_id = model.get_value(tree_iter, 1)
+            is_all_screenshots = folder_id == ALL_FOLDERS_ID
             is_drop_target = (
-                model.get_value(tree_iter, 1) == self.drag_destination_folder_id
+                folder_id == self.drag_destination_folder_id
             )
             renderer.set_property("cell-background-set", is_drop_target)
-            renderer.set_property("foreground-set", is_drop_target)
+            renderer.set_property(
+                "foreground-set", is_drop_target or is_all_screenshots
+            )
+            renderer.set_property("weight", 600 if is_all_screenshots else 400)
             if is_drop_target:
                 renderer.set_property("cell-background", "#16803c")
                 renderer.set_property("foreground", "#ffffff")
+            elif is_all_screenshots:
+                renderer.set_property("foreground", "#6b7280")
 
         def style_folder_action_cell(
             self, _column, renderer, model, tree_iter, _data=None
