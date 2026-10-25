@@ -946,6 +946,7 @@ def run_ui() -> int:
             self.folder_store = Gtk.TreeStore(str, str, bool)
             self.folder_tree = Gtk.TreeView(model=self.folder_store)
             self.folder_tree.set_headers_visible(False)
+            self.folder_tree.set_level_indentation(4)
             folder_renderer = Gtk.CellRendererText()
             folder_column = Gtk.TreeViewColumn("Folder", folder_renderer, text=0)
             folder_column.set_expand(True)
@@ -953,7 +954,7 @@ def run_ui() -> int:
             self.folder_tree.append_column(folder_column)
             self.folder_action_renderer = Gtk.CellRendererPixbuf()
             self.folder_action_renderer.set_property(
-                "icon-name", "document-edit-symbolic"
+                "icon-name", "view-more-symbolic"
             )
             self.folder_action_column = Gtk.TreeViewColumn(
                 "", self.folder_action_renderer
@@ -966,6 +967,9 @@ def run_ui() -> int:
             self.folder_tree.append_column(self.folder_action_column)
             self.folder_tree.connect(
                 "button-press-event", self.on_folder_tree_button_press
+            )
+            self.folder_tree.connect(
+                "button-release-event", self.on_folder_tree_button_release
             )
             self.folder_tree.set_has_tooltip(True)
             self.folder_tree.connect(
@@ -1333,13 +1337,29 @@ def run_ui() -> int:
             )
             if column != self.folder_action_column:
                 return False
+            self.pending_folder_drag_relative = None
             if folder_id == ALL_FOLDERS_ID:
                 return True
             self.folder_tree.get_selection().select_path(tree_path)
-            self.rename_folder(folder_id=folder_id)
             return True
 
-        def show_folder_context_menu(self, folder_id: str | None, event) -> None:
+        def on_folder_tree_button_release(self, _widget, event) -> bool:
+            if event.button != 1:
+                return False
+            hit = self.folder_tree.get_path_at_pos(int(event.x), int(event.y))
+            if not hit or hit[1] != self.folder_action_column:
+                return False
+            tree_iter = self.folder_store.get_iter(hit[0])
+            folder_id = self.folder_store.get_value(tree_iter, 1)
+            if folder_id == ALL_FOLDERS_ID:
+                return True
+            self.folder_tree.get_selection().select_path(hit[0])
+            self.show_folder_context_menu(folder_id, event, popup_button=0)
+            return True
+
+        def show_folder_context_menu(
+            self, folder_id: str | None, event, popup_button: int | None = None
+        ) -> None:
             if folder_id == ALL_FOLDERS_ID:
                 parent_folder = ""
             elif folder_id and folder_id.startswith(FOLDER_ID_PREFIX):
@@ -1374,7 +1394,14 @@ def run_ui() -> int:
                 menu.append(delete_item)
 
             menu.show_all()
-            menu.popup(None, None, None, None, event.button, event.time)
+            menu.popup(
+                None,
+                None,
+                None,
+                None,
+                event.button if popup_button is None else popup_button,
+                event.time,
+            )
 
         def on_folder_tree_query_tooltip(
             self, _widget, x: int, y: int, keyboard_mode: bool, tooltip
@@ -1389,7 +1416,7 @@ def run_ui() -> int:
             if folder_id == ALL_FOLDERS_ID:
                 return False
             folder_name = self.folder_store.get_value(tree_iter, 0)
-            tooltip.set_text(f"Rename {folder_name}")
+            tooltip.set_text(f"Options for {folder_name}")
             return True
 
         def set_drag_destination_folder(self, folder_id: str | None) -> None:
