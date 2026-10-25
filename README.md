@@ -4,7 +4,7 @@ Notesheet captures full-screen images, lets you select up to three, previews the
 
 ## Screenshots
 
-The screenshots show the current library and A4 preview, selected captures alongside search results, and the printer or PDF destination dialog.
+The reference screenshots show the capture list, A4 preview, selected captures alongside search results, and the printer or PDF destination dialog.
 
 ![Notesheet with three selected captures and their A4 preview](screenshots/notesheet-preview.png)
 
@@ -36,14 +36,17 @@ python3 notesheet.py setup-shortcut
 
 The current shortcut appears in bold in the toolbar. Use **Change…** to choose a different combination. Press Escape to cancel. Run `python3 notesheet.py remove-shortcut` to restore GNOME’s previous window-screenshot shortcut.
 
-Each capture opens a save dialog before writing the image. Enter an optional name, or leave it blank to use `screen-YYYYMMDD-HHMMSS-microseconds.png` (for example, `screen-20261020-132932-359695.png`). **Cancel capture** discards the screenshot. The saved confirmation uses urgent notification priority so GNOME can show it over fullscreen video.
+Each capture opens a save dialog where you can choose a folder or create one. Enter an optional name, or leave it blank to use `screen-YYYYMMDD-HHMMSS-microseconds.png`. **Cancel capture** discards the screenshot. The saved confirmation uses urgent notification priority so GNOME can show it over fullscreen video.
 
 ## Use the app
 
-- Captures are saved under `~/Pictures/NoteCaptures/Captures/`.
-- Screenshots are listed newest to oldest. Use the search field to filter by custom name or file name. Use the rename icon on a screenshot row to change its name; leave the name blank to use its capture timestamp.
+- Captures are saved under `~/Pictures/NoteCaptures/Captures/`. The folder list shows **All screenshots** and each top-level folder alongside it; subfolders appear under their parent. Folders are kept in alphabetical order. Selecting a folder shows screenshots stored directly inside it.
+- Use **New folder** to create a subfolder inside the selected folder, or a top-level folder when **All screenshots** is selected. New screenshots can be saved to any existing folder or subfolder from the capture dialog, which also lets you create a folder. The last selected save folder is remembered.
+- Use **Delete folder…** to remove the selected folder, all its subfolders, and every file inside after confirmation.
+- Screenshots are listed newest to oldest. In **All screenshots**, each row shows its current folder. Use the search field to filter by custom name, file name, or folder path. Use the rename button to change a screenshot's name; leave the name blank to use its capture timestamp.
 - Use the **From** and **To** calendar pickers to filter by an inclusive date range. Leave either limit empty for an open-ended range, or choose the same date in both pickers to show one day. Use **Clear** to show all dates again.
-- Select one to three screenshots by clicking their checkbox or the thumbnail and details area. Selected screenshots stay highlighted in blue with their checkboxes marked and remain visible regardless of active search or date filters. Selecting a screenshot does not move it; when a search or date filter is applied, selected screenshots appear at the top in selection order. Their selection order determines their positions on the page.
+- Select one to three screenshots by clicking their checkbox or the thumbnail and details area. Selected screenshots stay highlighted in blue with their checkboxes marked and remain visible regardless of the selected folder, search, or date filters. When a filter is active, selected screenshots appear at the top in selection order. Their selection order determines their positions on the page.
+- Use the folder button under the rename button to move one screenshot, or drag a screenshot onto a folder. **Move selection to folder…** also moves several selected screenshots at once. The destination chooser can create a new folder.
 - The A4 landscape preview updates as the selection changes. **Print selected** offers the system default printer, other CUPS queues, and **Save PDF…**. Created sheets are also kept under `~/Pictures/NoteCaptures/Sheets/`.
 - Screenshots remain in the library after printing. **Delete selection** removes all checked screenshots after confirmation.
 
