@@ -4,13 +4,19 @@ Notesheet captures full-screen images, lets you select up to three, previews the
 
 ## Screenshots
 
-The reference screenshots show the capture list, A4 preview, selected captures alongside search results, and the printer or PDF destination dialog.
+The screenshots show the current folder library, search results, A4 preview and print options, plus the safe move-before-delete flow for folders with files.
 
-![Notesheet with three selected captures and their A4 preview](screenshots/notesheet-preview.png)
+![Notesheet folder list, capture timestamps, and three selected screenshots in the A4 preview](screenshots/notesheet-library-folders.png)
 
-![Selected captures shown above the matching result for an active search](screenshots/notesheet-search-filter.png)
+![Search results showing capture timestamps and their current folders](screenshots/notesheet-search-folders.png)
 
-![Notesheet print and PDF options](screenshots/notesheet-print-options.png)
+![Printer and Save PDF options for an A4 sheet](screenshots/notesheet-print-dialog-current.png)
+
+![Screenshot preview inside the move dialog](screenshots/notesheet-move-preview.png)
+
+![Folder deletion confirmation with the option to move its files first](screenshots/notesheet-delete-folder-options.png)
+
+![Move folder contents to the main folder or another folder before deletion](screenshots/notesheet-move-folder-destinations.png)
 
 ## Install and run
 
@@ -41,9 +47,9 @@ Each capture opens a save dialog where you can choose a folder or create one. En
 ## Use the app
 
 - Captures are saved under `~/Pictures/NoteCaptures/Captures/`. The folder list shows **All screenshots** and each top-level folder alongside it; subfolders appear under their parent. Folders are kept in alphabetical order. Selecting a folder shows screenshots stored directly inside it.
-- Use **New folder** to create a subfolder inside the selected folder, or a top-level folder when **All screenshots** is selected. New screenshots can be saved to any existing folder or subfolder from the capture dialog, which also lets you create a folder. The last selected save folder is remembered.
+- Use **New folder** to create a subfolder inside the selected folder, or a top-level folder when **All screenshots** is selected. Creating a folder keeps the current folder selected. New screenshots can be saved to any existing folder or subfolder from the capture dialog, which also lets you create a folder without changing the selected destination. The last selected save folder is remembered.
 - Click the pencil icon at the right of a folder row to rename it; its subfolders, screenshots, and saved references are kept. When deleting a folder with files, choose **Move files…** to put them in the main folder or another folder before removing it, or delete the contents permanently.
-- Screenshots are listed newest to oldest. In **All screenshots**, each row shows its current folder. Use the search field to filter by custom name, file name, or folder path. Use the rename button to change a screenshot's name; leave the name blank to use its capture timestamp.
+- Screenshots are listed newest to oldest, with the capture timestamp below each name. In **All screenshots**, each row also shows its current folder. Use the search field to filter by custom name, file name, or folder path. Use the rename button to change a screenshot's name; leave the name blank to use its capture timestamp. The rename, move, and save dialogs can show a preview of the screenshot.
 - Use the **From** and **To** calendar pickers to filter by an inclusive date range. Leave either limit empty for an open-ended range, or choose the same date in both pickers to show one day. Use **Clear** to show all dates again.
 - Select one to three screenshots by clicking their checkbox or the thumbnail and details area. Selected screenshots stay highlighted in blue with their checkboxes marked and remain visible regardless of the selected folder, search, or date filters. When a filter is active, selected screenshots appear at the top in selection order. Their selection order determines their positions on the page.
 - Use the folder button under the rename button to move one screenshot, or drag a screenshot onto a folder. **Move selection to folder…** also moves several selected screenshots at once. The destination chooser can create a new folder.
