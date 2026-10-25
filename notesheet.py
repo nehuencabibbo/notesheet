@@ -62,6 +62,7 @@ STATE_PATH = ROOT / ".notesheet-state.json"
 ALL_FOLDERS_ID = "all"
 ROOT_FOLDER_ID = "root"
 FOLDER_ID_PREFIX = "folder:"
+FOLDER_DRAG_PREFIX = "notesheet-folder:"
 
 
 def timestamp() -> str:
@@ -896,6 +897,8 @@ def run_ui() -> int:
             self.focus_path: str | None = None
             self.pending_content_click: str | None = None
             self.dragging_capture_path: str | None = None
+            self.pending_folder_drag_relative: str | None = None
+            self.dragging_folder_relative: str | None = None
             self.checks: dict[str, Gtk.CheckButton] = {}
             self.row_paths: dict[Gtk.ListBoxRow, str] = {}
             self.active_folder_id = ALL_FOLDERS_ID
@@ -978,6 +981,16 @@ def run_ui() -> int:
                     0,
                 )
             ]
+            self.folder_tree.drag_source_set(
+                Gdk.ModifierType.BUTTON1_MASK,
+                self.capture_drag_targets,
+                Gdk.DragAction.MOVE,
+            )
+            self.folder_tree.connect(
+                "drag-data-get", self.on_folder_drag_data_get
+            )
+            self.folder_tree.connect("drag-begin", self.on_folder_drag_begin)
+            self.folder_tree.connect("drag-end", self.on_folder_drag_end)
             self.folder_tree.drag_dest_set(
                 Gtk.DestDefaults.MOTION | Gtk.DestDefaults.DROP,
                 self.capture_drag_targets,
@@ -1298,12 +1311,18 @@ def run_ui() -> int:
                 return False
             hit = self.folder_tree.get_path_at_pos(int(event.x), int(event.y))
             if not hit:
+                self.pending_folder_drag_relative = None
                 return False
             tree_path, column = hit[0], hit[1]
-            if column != self.folder_action_column:
-                return False
             tree_iter = self.folder_store.get_iter(tree_path)
             folder_id = self.folder_store.get_value(tree_iter, 1)
+            self.pending_folder_drag_relative = (
+                folder_id[len(FOLDER_ID_PREFIX) :]
+                if folder_id.startswith(FOLDER_ID_PREFIX)
+                else None
+            )
+            if column != self.folder_action_column:
+                return False
             if folder_id == ALL_FOLDERS_ID:
                 return True
             self.folder_tree.get_selection().select_path(tree_path)
@@ -1334,6 +1353,13 @@ def run_ui() -> int:
 
         def on_folder_drag_motion(self, _widget, context, x: int, y: int, time: int) -> bool:
             destination = self.folder_destination_at_pos(x, y)
+            if destination is not None and self.dragging_folder_relative is not None:
+                relative_folder = destination[1]
+                source_folder = self.dragging_folder_relative
+                if relative_folder == source_folder or relative_folder.startswith(
+                    source_folder + "/"
+                ):
+                    destination = None
             if destination is None:
                 self.set_drag_destination_folder(None)
                 self.folder_tree.set_drag_dest_row(
@@ -1361,6 +1387,25 @@ def run_ui() -> int:
         ) -> None:
             selection_data.set_text(path_text, -1)
 
+        def on_folder_drag_begin(self, _widget, _context) -> None:
+            self.dragging_folder_relative = self.pending_folder_drag_relative
+
+        def on_folder_drag_data_get(
+            self, _widget, _context, selection_data, _info: int, _time: int
+        ) -> None:
+            if self.dragging_folder_relative is not None:
+                selection_data.set_text(
+                    FOLDER_DRAG_PREFIX + self.dragging_folder_relative, -1
+                )
+
+        def on_folder_drag_end(self, _widget, _context) -> None:
+            self.dragging_folder_relative = None
+            self.pending_folder_drag_relative = None
+            self.set_drag_destination_folder(None)
+            self.folder_tree.set_drag_dest_row(
+                None, Gtk.TreeViewDropPosition.INTO_OR_BEFORE
+            )
+
         def on_folder_drag_data_received(
             self, _widget, context, x: int, y: int, selection_data,
             _info: int, time: int,
@@ -1370,9 +1415,15 @@ def run_ui() -> int:
             succeeded = False
             if destination is not None and path_text:
                 _tree_path, relative_folder, _folder_id = destination
-                succeeded = self.move_capture_paths(
-                    [Path(path_text)], relative_folder
-                )
+                if path_text.startswith(FOLDER_DRAG_PREFIX):
+                    source_folder = path_text[len(FOLDER_DRAG_PREFIX) :]
+                    succeeded = self.move_capture_folder(
+                        source_folder, relative_folder
+                    )
+                else:
+                    succeeded = self.move_capture_paths(
+                        [Path(path_text)], relative_folder
+                    )
             self.set_drag_destination_folder(None)
             context.finish(succeeded, False, time)
 
@@ -2330,6 +2381,102 @@ def run_ui() -> int:
                 self.refresh_library(force=True)
                 return
             self.move_capture_paths([path])
+
+        def move_capture_folder(self, source: str, destination: str) -> bool:
+            try:
+                source_dir = capture_folder_path(source)
+                destination_dir = capture_folder_path(destination)
+            except (OSError, ValueError) as exc:
+                self.show_error(f"Could not access a folder: {exc}")
+                self.refresh_library(force=True)
+                return False
+            if not source or not source_dir.is_dir() or source_dir.is_symlink():
+                self.show_error("The folder being moved is no longer available.")
+                self.refresh_library(force=True)
+                return False
+            if not destination_dir.is_dir() or destination_dir.is_symlink():
+                self.show_error("The destination folder is no longer available.")
+                self.refresh_library(force=True)
+                return False
+            if destination == source or destination.startswith(source + "/"):
+                self.show_error("A folder can't be moved inside itself.")
+                return False
+
+            parent_folder = PurePosixPath(source).parent.as_posix()
+            if destination == ("" if parent_folder == "." else parent_folder):
+                self.status_label.set_text("The folder is already in that folder.")
+                return True
+
+            target_dir = destination_dir / source_dir.name
+            if target_dir.exists() or target_dir.is_symlink():
+                self.show_error(
+                    f"A folder named “{source_dir.name}” already exists in the destination."
+                )
+                return False
+            new_relative = target_dir.relative_to(CAPTURES_DIR).as_posix()
+            try:
+                capture_folder_path(new_relative)
+                source_dir.rename(target_dir)
+            except (OSError, ValueError) as exc:
+                self.show_error(f"Could not move the folder: {exc}")
+                self.refresh_library(force=True)
+                return False
+
+            def relocated_path(path_text: str) -> str:
+                try:
+                    suffix = Path(path_text).relative_to(source_dir)
+                except ValueError:
+                    return path_text
+                return str(target_dir / suffix)
+
+            def relocated_folder(value: str) -> str:
+                if value == source:
+                    return new_relative
+                if value.startswith(source + "/"):
+                    return new_relative + value[len(source) :]
+                return value
+
+            self.selected_paths = [
+                relocated_path(path_text) for path_text in self.selected_paths
+            ]
+            if self.focus_path is not None:
+                self.focus_path = relocated_path(self.focus_path)
+            if self.active_folder_id.startswith(FOLDER_ID_PREFIX):
+                active_folder = self.active_folder_id[len(FOLDER_ID_PREFIX) :]
+                relocated_active = relocated_folder(active_folder)
+                if relocated_active != active_folder:
+                    self.active_folder_id = f"{FOLDER_ID_PREFIX}{relocated_active}"
+
+            history_error = None
+            try:
+                state = load_state()
+                state["capture_folder"] = relocated_folder(
+                    state.get("capture_folder") or ""
+                )
+                state["pending"] = [
+                    relocated_path(path_text)
+                    for path_text in state.get("pending", [])
+                ]
+                for sheet in state.get("sheets", []):
+                    sheet["images"] = [
+                        relocated_path(path_text)
+                        for path_text in sheet.get("images", [])
+                    ]
+                save_state(state)
+            except Exception as exc:
+                history_error = str(exc)
+
+            self.refresh_library(force=True)
+            self.select_folder(self.active_folder_id)
+            if history_error:
+                self.show_error(
+                    f"The folder was moved, but its saved history could not be updated: {history_error}"
+                )
+            else:
+                self.status_label.set_text(
+                    f"Moved folder {source} to {new_relative}."
+                )
+            return True
 
         def move_capture_paths(
             self, paths: list[Path], destination: str | None = None
