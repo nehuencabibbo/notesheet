@@ -948,8 +948,23 @@ def run_ui() -> int:
             self.folder_store = Gtk.TreeStore(str, str, bool)
             self.folder_tree = Gtk.TreeView(model=self.folder_store)
             self.folder_tree.set_headers_visible(False)
-            self.folder_tree.set_level_indentation(4)
+            self.folder_tree.set_level_indentation(2)
+            self.folder_tree.get_style_context().add_class("folder-tree")
+            self.folder_tree_style = Gtk.CssProvider()
+            self.folder_tree_style.load_from_data(
+                b"""
+                treeview.view.folder-tree {
+                    -GtkTreeView-expander-size: 8;
+                    -GtkTreeView-horizontal-separator: 0;
+                }
+                """
+            )
+            self.folder_tree.get_style_context().add_provider(
+                self.folder_tree_style,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+            )
             folder_renderer = Gtk.CellRendererText()
+            folder_renderer.set_property("xpad", 0)
             folder_column = Gtk.TreeViewColumn("Folder", folder_renderer, text=0)
             folder_column.set_expand(True)
             folder_column.set_cell_data_func(folder_renderer, self.style_folder_cell)
