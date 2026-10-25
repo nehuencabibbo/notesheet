@@ -1545,9 +1545,17 @@ def run_ui() -> int:
             dialog = Gtk.MessageDialog(
                 transient_for=self,
                 modal=True,
-                message_type=Gtk.MessageType.WARNING,
+                message_type=(
+                    Gtk.MessageType.WARNING
+                    if contents
+                    else Gtk.MessageType.QUESTION
+                ),
                 buttons=Gtk.ButtonsType.CANCEL,
-                text=f"Delete folder “{relative_folder}”?",
+                text=(
+                    f"Delete folder “{relative_folder}”?"
+                    if contents
+                    else f"Delete empty folder “{relative_folder}”?"
+                ),
             )
             if contents:
                 dialog.format_secondary_text(
@@ -1556,11 +1564,17 @@ def run_ui() -> int:
                     "folder first, or delete them permanently."
                 )
                 dialog.add_button("Move files…", Gtk.ResponseType.APPLY)
-            else:
+                delete_label = "Delete folder and contents"
+            elif subfolder_count:
                 dialog.format_secondary_text(
-                    f"This permanently deletes {subfolder_count} empty subfolder(s)."
+                    f"This folder has no files. Its {subfolder_count} empty "
+                    "subfolder(s) will also be removed."
                 )
-            dialog.add_button("Delete folder and contents", Gtk.ResponseType.YES)
+                delete_label = "Delete folder"
+            else:
+                dialog.format_secondary_text("This folder is empty.")
+                delete_label = "Delete folder"
+            dialog.add_button(delete_label, Gtk.ResponseType.YES)
             response = dialog.run()
             dialog.destroy()
             if response == Gtk.ResponseType.APPLY:
