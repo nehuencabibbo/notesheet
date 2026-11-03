@@ -13,6 +13,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import uuid
 from datetime import date, datetime
 from pathlib import Path, PurePosixPath
 
@@ -637,26 +638,119 @@ def request_capture_folder_choice(
     return result
 
 
+def capture_wayland_screen(GdkPixbuf, Gio, GLib):
+    """Ask the desktop screenshot portal for a full-screen image on Wayland."""
+    connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    loop = GLib.MainLoop()
+    state = {"handle": None, "responses": {}, "error": None}
+
+    def on_response(
+        _connection,
+        _sender_name,
+        object_path,
+        _interface_name,
+        _signal_name,
+        parameters,
+        _user_data,
+    ):
+        state["responses"][object_path] = parameters.unpack()
+        if object_path == state["handle"]:
+            loop.quit()
+
+    def on_method_reply(_connection, result, _user_data):
+        try:
+            state["handle"] = connection.call_finish(result).unpack()[0]
+            if state["handle"] in state["responses"]:
+                loop.quit()
+        except GLib.Error as exc:
+            state["error"] = exc
+            loop.quit()
+
+    subscription = connection.signal_subscribe(
+        "org.freedesktop.portal.Desktop",
+        "org.freedesktop.portal.Request",
+        "Response",
+        None,
+        None,
+        Gio.DBusSignalFlags.NONE,
+        on_response,
+        None,
+    )
+    options = {
+        "handle_token": GLib.Variant("s", f"notesheet_{uuid.uuid4().hex}"),
+        "interactive": GLib.Variant("b", False),
+    }
+    try:
+        connection.call(
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.Screenshot",
+            "Screenshot",
+            GLib.Variant("(sa{sv})", ("", options)),
+            GLib.VariantType.new("(o)"),
+            Gio.DBusCallFlags.NONE,
+            -1,
+            None,
+            on_method_reply,
+            None,
+        )
+        loop.run()
+    finally:
+        connection.signal_unsubscribe(subscription)
+
+    if state["error"] is not None:
+        raise RuntimeError(f"Could not request a desktop screenshot: {state['error']}")
+    response_code, results = state["responses"][state["handle"]]
+    if response_code == 1:
+        return None
+    if response_code != 0:
+        raise RuntimeError("The desktop screenshot request failed.")
+
+    screenshot_uri = results.get("uri")
+    if not screenshot_uri:
+        raise RuntimeError("The desktop did not return a screenshot image.")
+    screenshot_path = Gio.File.new_for_uri(screenshot_uri).get_path()
+    if not screenshot_path:
+        raise RuntimeError("The desktop returned an inaccessible screenshot image.")
+    try:
+        return GdkPixbuf.Pixbuf.new_from_file(screenshot_path)
+    except GLib.Error as exc:
+        raise RuntimeError(f"Could not read the desktop screenshot: {exc}") from exc
+
+
 def capture_full_screen() -> Path | None:
-    """Capture the X11 desktop root window through GNOME's GDK bindings."""
+    """Capture the full screen through the active desktop backend."""
     try:
         import gi
 
         gi.require_version("Gtk", "3.0")
         gi.require_version("Gdk", "3.0")
-        from gi.repository import Gdk, Gtk
+        gi.require_version("GdkPixbuf", "2.0")
+        gi.require_version("Gio", "2.0")
+        from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk
 
         Gtk.init([])
         display = Gdk.Display.get_default()
         if display is None:
             raise RuntimeError("No graphical display is available.")
-        screen = display.get_default_screen()
-        root_window = screen.get_root_window()
-        if root_window is None:
-            raise RuntimeError("Could not access the desktop screenshot surface.")
-        width = root_window.get_width()
-        height = root_window.get_height()
-        pixbuf = Gdk.pixbuf_get_from_window(root_window, 0, 0, width, height)
+
+        display_name = display.get_name().lower()
+        is_wayland = (
+            os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
+            or display_name.startswith("wayland")
+        )
+        if is_wayland:
+            pixbuf = capture_wayland_screen(GdkPixbuf, Gio, GLib)
+            if pixbuf is None:
+                return None
+        else:
+            screen = display.get_default_screen()
+            root_window = screen.get_root_window()
+            if root_window is None:
+                raise RuntimeError("Could not access the desktop screenshot surface.")
+            width = root_window.get_width()
+            height = root_window.get_height()
+            pixbuf = Gdk.pixbuf_get_from_window(root_window, 0, 0, width, height)
         if pixbuf is None:
             raise RuntimeError("The desktop did not provide a screenshot image.")
         state = load_state()
@@ -885,6 +979,10 @@ def run_ui() -> int:
     except Exception as exc:
         print(f"Could not load the Notesheet interface: {exc}", file=sys.stderr)
         return 1
+
+    # On Wayland, GNOME matches the window to notesheet.desktop by app ID.
+    # Python otherwise exposes the generic "python3" process name here.
+    GLib.set_prgname("notesheet")
 
     class NotesheetWindow(Gtk.Window):
         def __init__(self) -> None:
