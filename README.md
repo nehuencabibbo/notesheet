@@ -57,7 +57,7 @@ The optional Chrome extension hides Hotmart’s player overlay, starts Notesheet
    ```
 
    For Chromium, use `chromium` instead of `chrome`.
-4. In Notesheet, use **Change Chrome…** to choose the Hotmart capture shortcut. The default is **Ctrl+Shift+Y**. Reload the Hotmart tab after loading the extension and whenever you change the shortcut.
+4. In Notesheet, use **Change Chrome…** to choose a shortcut preset or record a custom shortcut. Presets include **Ctrl+Shift+Y**, **Ctrl+Shift+K**, **Alt+Shift+Y**, **Ctrl+Shift+Comma**, and **Ctrl+Shift+Period**. Reload the Hotmart tab after loading the extension and whenever you change the shortcut.
 
 Chrome does not let Notesheet change an extension command through its API. Instead, the extension reads this app setting and listens for the shortcut only on a focused Hotmart tab; Chrome must be open on that tab, and the shortcut is not global. For compatibility with Chrome shortcuts, the app accepts letters, numbers, comma, period, navigation keys, and media keys. Regular keys require **Ctrl** or **Alt**; **Shift** is optional; **Ctrl+Alt** is not accepted. Media keys are used alone. Chrome or Ubuntu can reserve some key combinations, in which case the page will not receive them. `Super+Print` remains available for Notesheet’s separate GNOME capture shortcut.
 

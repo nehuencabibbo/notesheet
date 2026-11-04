@@ -23,6 +23,13 @@ from PIL import Image, ImageDraw
 APP_NAME = "Notesheet"
 SHORTCUT = "<Alt>Print"
 CHROME_SHORTCUT_DEFAULT = "Ctrl+Shift+Y"
+CHROME_SHORTCUT_PRESETS = (
+    ("Ctrl+Shift+Y", "Ctrl+Shift+Y (default)"),
+    ("Ctrl+Shift+K", "Ctrl+Shift+K"),
+    ("Alt+Shift+Y", "Alt+Shift+Y"),
+    ("Ctrl+Shift+Comma", "Ctrl+Shift+Comma"),
+    ("Ctrl+Shift+Period", "Ctrl+Shift+Period"),
+)
 CHROME_SHORTCUT_KEYS = {
     "comma": "Comma",
     "period": "Period",
@@ -2678,16 +2685,27 @@ def run_ui() -> int:
                 label=(
                     "Press a Chrome-supported shortcut. It must include Ctrl or Alt; "
                     "Ctrl+Alt and Super are unavailable. Media keys can be used alone. "
-                    "The shortcut works only on a focused Hotmart tab. Escape cancels."
+                    "The shortcut works only on a focused Hotmart tab, and Chrome or Ubuntu "
+                    "may intercept reserved combinations. Escape cancels."
                 )
             )
             instruction.set_line_wrap(True)
             content.pack_start(instruction, False, False, 0)
-            captured_label = Gtk.Label(label="Waiting for a shortcut…")
+            preset_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            preset_row.pack_start(Gtk.Label(label="Example shortcuts:"), False, False, 0)
+            preset_combo = Gtk.ComboBoxText()
+            for binding, title in CHROME_SHORTCUT_PRESETS:
+                preset_combo.append(binding, title)
+            preset_row.pack_start(preset_combo, True, True, 0)
+            content.pack_start(preset_row, False, False, 0)
+
+            captured_label = Gtk.Label(label="Select an example or press a shortcut…")
             captured_label.get_style_context().add_class("title-3")
             capture_area = Gtk.EventBox()
             capture_area.set_can_focus(True)
-            capture_area.add_events(Gdk.EventMask.KEY_PRESS_MASK)
+            capture_area.add_events(
+                Gdk.EventMask.KEY_PRESS_MASK | Gdk.EventMask.BUTTON_PRESS_MASK
+            )
             capture_area.add(captured_label)
             content.pack_start(capture_area, False, False, 0)
 
@@ -2701,12 +2719,31 @@ def run_ui() -> int:
                 Gdk.KEY_Hyper_L, Gdk.KEY_Hyper_R,
             }
 
+            def on_preset_changed(combo) -> None:
+                binding = combo.get_active_id()
+                if binding:
+                    chosen["binding"] = normalize_chrome_shortcut(binding)
+                    captured_label.set_text(chosen["binding"])
+                    accept_button.set_sensitive(True)
+                else:
+                    chosen["binding"] = None
+                    accept_button.set_sensitive(False)
+
+            preset_combo.connect("changed", on_preset_changed)
+
+            def focus_capture_area(_widget, _event) -> bool:
+                capture_area.grab_focus()
+                return False
+
+            capture_area.connect("button-press-event", focus_capture_area)
+
             def on_key_press(_widget, event) -> bool:
                 if event.keyval == Gdk.KEY_Escape:
                     dialog.response(Gtk.ResponseType.CANCEL)
                     return True
                 if event.keyval in modifier_keys:
                     return True
+                preset_combo.set_active(-1)
                 try:
                     binding = chrome_shortcut_from_gtk_event(event, Gdk)
                 except ValueError as exc:
