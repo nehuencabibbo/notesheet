@@ -44,6 +44,23 @@ The current shortcut appears in bold in the toolbar. Use **Change…** to choose
 
 Each capture opens a save dialog where you can choose a folder or create one. Enter an optional name, or leave it blank to use `screen-YYYYMMDD-HHMMSS-microseconds.png`. **Cancel capture** discards the screenshot. The saved confirmation uses urgent notification priority so GNOME can show it over fullscreen video.
 
+## Chrome capture shortcut for Hotmart
+
+The optional Chrome extension hides Hotmart’s player overlay, starts Notesheet’s capture flow through Native Messaging, and restores the overlay after the capture dialog closes. It targets the Hotmart player shown in the page DOM and does not affect other video players.
+
+1. Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select the repository’s `chrome_extension` folder.
+2. Copy the extension ID displayed on its card.
+3. Register the Native Messaging host for Google Chrome:
+
+   ```bash
+   python3 native_messaging/install_host.py chrome EXTENSION_ID
+   ```
+
+   For Chromium, use `chromium` instead of `chrome`.
+4. Open `chrome://extensions/shortcuts` and assign or confirm **Ctrl+Shift+Y** for **Hide Hotmart controls and capture with Notesheet**.
+
+Chrome receives that shortcut only while it is focused. The extension command API does not support `Super+Print`; keep Notesheet’s GNOME shortcut separate. The host registration allows only this extension ID and only accepts the Notesheet capture action.
+
 ## Use the app
 
 - Captures are saved under `~/Pictures/NoteCaptures/Captures/`. The folder list shows **All screenshots** and each top-level folder alongside it; subfolders appear under their parent. Folders are kept in alphabetical order. Selecting a folder shows screenshots stored directly inside it.

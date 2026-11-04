@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Notesheet Hotmart Capture",
+  "version": "1.0.0",
+  "description": "Hide Hotmart video controls before capturing with Notesheet.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "https://hotmart.com/*",
+    "https://*.hotmart.com/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "commands": {
+    "capture-hotmart-with-notesheet": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y"
+      },
+      "description": "Hide Hotmart controls and capture with Notesheet"
+    }
+  }
+}
