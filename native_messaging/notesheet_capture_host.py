@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Native Messaging bridge that only starts Notesheet's capture action."""
+"""Native Messaging bridge for Notesheet's capture and Chrome shortcut setting."""
 
 from __future__ import annotations
 
@@ -54,7 +54,22 @@ def main() -> int:
         request = read_message()
         if request is None:
             return 0
-        if request.get("action") != "capture":
+        action = request.get("action")
+        if action == "get-shortcut":
+            if not NOTESHEET_SCRIPT.is_file():
+                raise FileNotFoundError(f"Notesheet was not found at {NOTESHEET_SCRIPT}.")
+            result = subprocess.run(
+                [sys.executable, str(NOTESHEET_SCRIPT), "get-chrome-shortcut"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or "Could not read shortcut setting.")
+            write_message({"ok": True, "binding": result.stdout.strip()})
+            return 0
+        if action != "capture":
             write_message({"ok": False, "error": "Unsupported action."})
             return 0
         if not NOTESHEET_SCRIPT.is_file():

@@ -22,6 +22,29 @@ from PIL import Image, ImageDraw
 
 APP_NAME = "Notesheet"
 SHORTCUT = "<Alt>Print"
+CHROME_SHORTCUT_DEFAULT = "Ctrl+Shift+Y"
+CHROME_SHORTCUT_KEYS = {
+    "comma": "Comma",
+    "period": "Period",
+    "home": "Home",
+    "end": "End",
+    "pageup": "PageUp",
+    "pagedown": "PageDown",
+    "space": "Space",
+    "insert": "Insert",
+    "delete": "Delete",
+    "up": "Up",
+    "down": "Down",
+    "left": "Left",
+    "right": "Right",
+    "medianexttrack": "MediaNextTrack",
+    "mediaplaypause": "MediaPlayPause",
+    "mediaprevtrack": "MediaPrevTrack",
+    "mediastop": "MediaStop",
+}
+CHROME_MEDIA_KEYS = {
+    "MediaNextTrack", "MediaPlayPause", "MediaPrevTrack", "MediaStop"
+}
 CUSTOM_PATH = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/notesheet/"
 MEDIA_KEYS_SCHEMA = "org.gnome.settings-daemon.plugins.media-keys"
 CUSTOM_SCHEMA = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding"
@@ -182,7 +205,12 @@ def relative_capture_folder(path: Path) -> str:
 
 def load_state() -> dict:
     if not STATE_PATH.exists():
-        return {"pending": [], "sheets": [], "capture_folder": ""}
+        return {
+            "pending": [],
+            "sheets": [],
+            "capture_folder": "",
+            "chrome_shortcut": CHROME_SHORTCUT_DEFAULT,
+        }
     try:
         data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
@@ -190,6 +218,7 @@ def load_state() -> dict:
         data.setdefault("pending", [])
         data.setdefault("sheets", [])
         data.setdefault("capture_folder", "")
+        data.setdefault("chrome_shortcut", CHROME_SHORTCUT_DEFAULT)
         return data
     except (OSError, ValueError, json.JSONDecodeError):
         raise RuntimeError(
@@ -202,6 +231,119 @@ def save_state(state: dict) -> None:
     temp_path = STATE_PATH.with_suffix(".tmp")
     temp_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
     os.replace(temp_path, STATE_PATH)
+
+
+def normalize_chrome_shortcut(binding: str) -> str:
+    """Validate a shortcut against Chrome's supported command key combinations."""
+    if not isinstance(binding, str):
+        raise ValueError("Choose one Chrome-supported key with its modifiers.")
+    parts = [part.strip() for part in binding.split("+")]
+    if not parts or any(not part for part in parts):
+        raise ValueError("Choose one Chrome-supported key with its modifiers.")
+
+    modifiers = set()
+    keys = []
+    for part in parts:
+        modifier = part.casefold()
+        if modifier in {"ctrl", "control"}:
+            if "Ctrl" in modifiers:
+                raise ValueError("Choose each shortcut modifier only once.")
+            modifiers.add("Ctrl")
+        elif modifier == "alt":
+            if "Alt" in modifiers:
+                raise ValueError("Choose each shortcut modifier only once.")
+            modifiers.add("Alt")
+        elif modifier == "shift":
+            if "Shift" in modifiers:
+                raise ValueError("Choose each shortcut modifier only once.")
+            modifiers.add("Shift")
+        else:
+            keys.append(part)
+
+    if len(keys) != 1:
+        raise ValueError("Choose one Chrome-supported key with its modifiers.")
+
+    key = keys[0]
+    folded_key = key.casefold()
+    if len(key) == 1 and key.lower() in "abcdefghijklmnopqrstuvwxyz":
+        key = key.upper()
+    elif len(key) == 1 and key in "0123456789":
+        pass
+    else:
+        key = CHROME_SHORTCUT_KEYS.get(folded_key, "")
+    if not key:
+        raise ValueError("Chrome supports letters, numbers, navigation keys, and media keys.")
+
+    if key in CHROME_MEDIA_KEYS:
+        if modifiers:
+            raise ValueError("Chrome media-key shortcuts cannot use modifiers.")
+        return key
+    if not ("Ctrl" in modifiers or "Alt" in modifiers):
+        raise ValueError("Chrome shortcuts must include Ctrl or Alt.")
+    if {"Ctrl", "Alt"}.issubset(modifiers):
+        raise ValueError("Chrome does not allow Ctrl+Alt shortcuts.")
+
+    ordered_modifiers = [name for name in ("Ctrl", "Alt", "Shift") if name in modifiers]
+    return "+".join([*ordered_modifiers, key])
+
+
+def get_chrome_shortcut_binding() -> str:
+    """Return the saved Chrome shortcut, falling back if stored state is invalid."""
+    try:
+        return normalize_chrome_shortcut(
+            load_state().get("chrome_shortcut", CHROME_SHORTCUT_DEFAULT)
+        )
+    except (TypeError, ValueError):
+        return CHROME_SHORTCUT_DEFAULT
+
+
+def set_chrome_shortcut_binding(binding: str) -> str:
+    binding = normalize_chrome_shortcut(binding)
+    state = load_state()
+    state["chrome_shortcut"] = binding
+    save_state(state)
+    return binding
+
+
+def chrome_shortcut_from_gtk_event(event, Gdk) -> str:
+    """Convert a GTK key event to a Chrome-compatible shortcut or raise."""
+    state = event.state
+    unsupported_masks = (
+        getattr(Gdk.ModifierType, "SUPER_MASK", 0)
+        | getattr(Gdk.ModifierType, "META_MASK", 0)
+        | getattr(Gdk.ModifierType, "HYPER_MASK", 0)
+    )
+    if state & unsupported_masks:
+        raise ValueError("Chrome shortcuts cannot use Super, Meta, or Hyper.")
+
+    modifiers = []
+    if state & Gdk.ModifierType.CONTROL_MASK:
+        modifiers.append("Ctrl")
+    if state & Gdk.ModifierType.MOD1_MASK:
+        modifiers.append("Alt")
+    if state & Gdk.ModifierType.SHIFT_MASK:
+        modifiers.append("Shift")
+
+    key_name = Gdk.keyval_name(Gdk.keyval_to_lower(event.keyval)) or ""
+    gtk_keys = {
+        "Page_Up": "PageUp",
+        "Page_Down": "PageDown",
+        "comma": "Comma",
+        "period": "Period",
+        "space": "Space",
+        "XF86AudioNext": "MediaNextTrack",
+        "XF86AudioPlay": "MediaPlayPause",
+        "XF86AudioPause": "MediaPlayPause",
+        "XF86AudioPrev": "MediaPrevTrack",
+        "XF86AudioStop": "MediaStop",
+    }
+    if len(key_name) == 1 and key_name.isalpha():
+        key_name = key_name.upper()
+    elif key_name.casefold() in CHROME_SHORTCUT_KEYS:
+        key_name = CHROME_SHORTCUT_KEYS[key_name.casefold()]
+    else:
+        key_name = gtk_keys.get(key_name, key_name)
+    return normalize_chrome_shortcut("+".join([*modifiers, key_name]))
 
 
 def notify(title: str, body: str) -> None:
@@ -1030,6 +1172,12 @@ def run_ui() -> int:
             shortcut_button = Gtk.Button(label="Change…")
             shortcut_button.connect("clicked", self.change_shortcut)
             toolbar.pack_start(shortcut_button, False, False, 0)
+            self.chrome_shortcut_label = Gtk.Label()
+            self.update_chrome_shortcut_label()
+            toolbar.pack_start(self.chrome_shortcut_label, False, False, 0)
+            chrome_shortcut_button = Gtk.Button(label="Change Chrome…")
+            chrome_shortcut_button.connect("clicked", self.change_chrome_shortcut)
+            toolbar.pack_start(chrome_shortcut_button, False, False, 0)
             folder_button = Gtk.Button(label="Open screenshot folder")
             folder_button.connect("clicked", lambda *_: subprocess.Popen(["xdg-open", str(CAPTURES_DIR)]))
             toolbar.pack_end(folder_button, False, False, 0)
@@ -2485,6 +2633,121 @@ def run_ui() -> int:
             except Exception:
                 self.shortcut_label.set_text("Capture shortcut: unavailable")
 
+        def update_chrome_shortcut_label(self) -> None:
+            try:
+                shortcut = html.escape(get_chrome_shortcut_binding())
+                self.chrome_shortcut_label.set_markup(
+                    f"Chrome capture: <b>{shortcut}</b>"
+                )
+            except Exception:
+                self.chrome_shortcut_label.set_text("Chrome capture: unavailable")
+
+        def change_chrome_shortcut(self, *_args) -> None:
+            try:
+                old_binding = get_shortcut_binding()
+                import gi
+
+                gi.require_version("Gio", "2.0")
+                from gi.repository import Gio
+
+                Gio.Settings.new_with_path(CUSTOM_SCHEMA, CUSTOM_PATH).set_string(
+                    "binding", ""
+                )
+            except Exception as exc:
+                self.show_error(
+                    f"Could not temporarily disable the desktop capture shortcut: {exc}"
+                )
+                return
+
+            from gi.repository import Gdk
+
+            dialog = Gtk.Dialog(
+                title="Change Chrome capture shortcut",
+                transient_for=self,
+                modal=True,
+            )
+            dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+            accept_button = dialog.add_button("Use shortcut", Gtk.ResponseType.ACCEPT)
+            accept_button.set_sensitive(False)
+            dialog.set_default_size(440, 190)
+
+            content = dialog.get_content_area()
+            content.set_border_width(18)
+            content.set_spacing(10)
+            instruction = Gtk.Label(
+                label=(
+                    "Press a Chrome-supported shortcut. It must include Ctrl or Alt; "
+                    "Ctrl+Alt and Super are unavailable. Media keys can be used alone. "
+                    "The shortcut works only on a focused Hotmart tab. Escape cancels."
+                )
+            )
+            instruction.set_line_wrap(True)
+            content.pack_start(instruction, False, False, 0)
+            captured_label = Gtk.Label(label="Waiting for a shortcut…")
+            captured_label.get_style_context().add_class("title-3")
+            capture_area = Gtk.EventBox()
+            capture_area.set_can_focus(True)
+            capture_area.add_events(Gdk.EventMask.KEY_PRESS_MASK)
+            capture_area.add(captured_label)
+            content.pack_start(capture_area, False, False, 0)
+
+            chosen = {"binding": None}
+            modifier_keys = {
+                Gdk.KEY_Shift_L, Gdk.KEY_Shift_R,
+                Gdk.KEY_Control_L, Gdk.KEY_Control_R,
+                Gdk.KEY_Meta_L, Gdk.KEY_Meta_R,
+                Gdk.KEY_Alt_L, Gdk.KEY_Alt_R,
+                Gdk.KEY_Super_L, Gdk.KEY_Super_R,
+                Gdk.KEY_Hyper_L, Gdk.KEY_Hyper_R,
+            }
+
+            def on_key_press(_widget, event) -> bool:
+                if event.keyval == Gdk.KEY_Escape:
+                    dialog.response(Gtk.ResponseType.CANCEL)
+                    return True
+                if event.keyval in modifier_keys:
+                    return True
+                try:
+                    binding = chrome_shortcut_from_gtk_event(event, Gdk)
+                except ValueError as exc:
+                    chosen["binding"] = None
+                    captured_label.set_text(str(exc))
+                    accept_button.set_sensitive(False)
+                    return True
+                chosen["binding"] = binding
+                captured_label.set_text(binding)
+                accept_button.set_sensitive(True)
+                return True
+
+            capture_area.connect("key-press-event", on_key_press)
+            dialog.show_all()
+            capture_area.grab_focus()
+
+            committed = False
+            error = None
+            try:
+                response = dialog.run()
+                if response == Gtk.ResponseType.ACCEPT and chosen["binding"]:
+                    set_chrome_shortcut_binding(chosen["binding"])
+                    committed = True
+            except Exception as exc:
+                error = str(exc)
+            finally:
+                try:
+                    set_shortcut_binding(old_binding)
+                except Exception as exc:
+                    error = error or f"Could not restore the desktop shortcut: {exc}"
+                dialog.destroy()
+
+            if error:
+                self.show_error(f"Could not change the Chrome shortcut: {error}")
+                return
+            self.update_chrome_shortcut_label()
+            if committed:
+                self.status_label.set_text(
+                    "Chrome shortcut updated. Reload the Hotmart tab to apply it."
+                )
+
         def change_shortcut(self, *_args) -> None:
             try:
                 old_binding = get_shortcut_binding()
@@ -3065,6 +3328,11 @@ def status() -> int:
     return 0
 
 
+def print_chrome_shortcut() -> int:
+    print(get_chrome_shortcut_binding())
+    return 0
+
+
 def setup_shortcut() -> int:
     try:
         import gi
@@ -3135,7 +3403,7 @@ def main() -> int:
         "action",
         nargs="?",
         default="capture",
-        choices=("capture", "ui", "print-latest", "open-latest", "status", "setup-shortcut", "remove-shortcut"),
+        choices=("capture", "ui", "print-latest", "open-latest", "status", "setup-shortcut", "remove-shortcut", "get-chrome-shortcut"),
         help="action to perform (default: capture)",
     )
     action = parser.parse_args().action
@@ -3147,6 +3415,7 @@ def main() -> int:
         "status": status,
         "setup-shortcut": setup_shortcut,
         "remove-shortcut": remove_shortcut,
+        "get-chrome-shortcut": print_chrome_shortcut,
     }[action]()
 
 
