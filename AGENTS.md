@@ -74,3 +74,10 @@ Constraints for each level:
 - MUST flag best practices and explain trade-offs
 - MUST still execute the user's choice if they disagree with a suggestion
 <!-- END AWS Agent Toolkit rules -->
+
+## Python logging and stdout
+
+- Use Python's `logging` module for application diagnostics, warnings, and status logs. Configure logging to write to `sys.stderr`; do not use `print()` for logs.
+- Keep `stdout` free of logs and ordinary diagnostics because it carries machine-readable protocol data. The Native Messaging host must write only framed protocol responses to `sys.stdout.buffer`.
+- `notesheet.py get-chrome-shortcut` is an internal subprocess protocol consumed by the Native Messaging host. Its stdout must contain only the configured shortcut and a newline; never add logging or other text to that output.
+- Capture or redirect subprocess stdout when parsing command results or when output must not reach a protocol stream.

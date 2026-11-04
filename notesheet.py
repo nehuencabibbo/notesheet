@@ -7,6 +7,7 @@ import argparse
 import html
 import io
 import json
+import logging
 import os
 import re
 import shlex
@@ -21,6 +22,7 @@ from PIL import Image, ImageDraw
 
 
 APP_NAME = "Notesheet"
+LOGGER = logging.getLogger(__name__)
 SHORTCUT = "<Alt>Print"
 CHROME_SHORTCUT_DEFAULT = "Ctrl+Shift+Y"
 CHROME_SHORTCUT_PRESETS = (
@@ -374,7 +376,7 @@ def dialog_error(message: str) -> None:
             timeout=60,
         )
     except (OSError, subprocess.SubprocessError):
-        print(f"{APP_NAME}: {message}", file=sys.stderr)
+        LOGGER.error("%s: %s", APP_NAME, message)
 
 
 def get_shortcut_binding() -> str:
@@ -1078,6 +1080,7 @@ def capture() -> int:
         notify("Screenshot saved", f"Open Notesheet to choose shots and print.\n{shot}")
         return 0
     except Exception as exc:
+        LOGGER.exception("Screenshot capture failed")
         dialog_error(str(exc))
         return 1
 
@@ -1097,21 +1100,21 @@ def latest_sheet(state: dict) -> Path | None:
 def print_latest() -> int:
     pdf_path = latest_sheet(load_state())
     if pdf_path is None:
-        print("No Notesheet PDF exists yet. Select one or more screenshots in Notesheet.", file=sys.stderr)
+        LOGGER.error("No Notesheet PDF exists yet. Select one or more screenshots in Notesheet.")
         return 1
     try:
-        print(submit_to_printer(pdf_path))
+        LOGGER.info("%s", submit_to_printer(pdf_path))
         mark_printed(pdf_path)
         return 0
-    except (OSError, subprocess.SubprocessError) as exc:
-        print(f"Could not print {pdf_path}: {exc}", file=sys.stderr)
+    except (OSError, subprocess.SubprocessError):
+        LOGGER.exception("Could not print %s", pdf_path)
         return 1
 
 
 def open_latest() -> int:
     pdf_path = latest_sheet(load_state())
     if pdf_path is None:
-        print("No Notesheet PDF exists yet. Select one or more screenshots in Notesheet.", file=sys.stderr)
+        LOGGER.error("No Notesheet PDF exists yet. Select one or more screenshots in Notesheet.")
         return 1
     subprocess.Popen(["xdg-open", str(pdf_path)])
     return 0
@@ -1125,8 +1128,8 @@ def run_ui() -> int:
         gi.require_version("Gtk", "3.0")
         gi.require_version("GdkPixbuf", "2.0")
         from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
-    except Exception as exc:
-        print(f"Could not load the Notesheet interface: {exc}", file=sys.stderr)
+    except Exception:
+        LOGGER.exception("Could not load the Notesheet interface")
         return 1
 
     # On Wayland, GNOME matches the window to notesheet.desktop by app ID.
@@ -3348,25 +3351,28 @@ def run_ui() -> int:
         NotesheetWindow()
         Gtk.main()
         return 0
-    except Exception as exc:
-        print(f"Could not open Notesheet: {exc}", file=sys.stderr)
+    except Exception:
+        LOGGER.exception("Could not open Notesheet")
         return 1
 
 
 def status() -> int:
     state = load_state()
-    print(f"Capture folder: {ROOT}")
+    LOGGER.info("Capture folder: %s", ROOT)
     captures = (
         list(CAPTURES_DIR.rglob("screen-*.png")) if CAPTURES_DIR.is_dir() else []
     )
-    print(f"Saved screenshots: {len(captures)}")
+    LOGGER.info("Saved screenshots: %s", len(captures))
     sheet = latest_sheet(state)
-    print(f"Latest sheet: {sheet if sheet else 'none yet'}")
+    LOGGER.info("Latest sheet: %s", sheet if sheet else "none yet")
     return 0
 
 
-def print_chrome_shortcut() -> int:
-    print(get_chrome_shortcut_binding())
+def write_chrome_shortcut_protocol() -> int:
+    # This one-line value is an internal subprocess protocol consumed by the
+    # Native Messaging host. Keep stdout free of logging and other text.
+    sys.stdout.write(get_chrome_shortcut_binding() + "\n")
+    sys.stdout.flush()
     return 0
 
 
@@ -3400,10 +3406,10 @@ def setup_shortcut() -> int:
         if CUSTOM_PATH not in paths:
             media_keys.set_strv("custom-keybindings", paths + [CUSTOM_PATH])
         save_state(state)
-        print("Alt+Print is now bound to Notesheet full-screen capture.")
+        LOGGER.info("Alt+Print is now bound to Notesheet full-screen capture.")
         return 0
-    except Exception as exc:
-        print(f"Could not configure the GNOME shortcut: {exc}", file=sys.stderr)
+    except Exception:
+        LOGGER.exception("Could not configure the GNOME shortcut")
         return 1
 
 
@@ -3425,14 +3431,21 @@ def remove_shortcut() -> int:
         restore = state.pop("shortcut_backup", [SHORTCUT])
         shell_keys.set_strv("screenshot-window", restore)
         save_state(state)
-        print("Notesheet shortcut removed; GNOME's previous window-screenshot key was restored.")
+        LOGGER.info(
+            "Notesheet shortcut removed; GNOME's previous window-screenshot key was restored."
+        )
         return 0
-    except Exception as exc:
-        print(f"Could not remove the GNOME shortcut: {exc}", file=sys.stderr)
+    except Exception:
+        LOGGER.exception("Could not remove the GNOME shortcut")
         return 1
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s: %(message)s",
+        stream=sys.stderr,
+    )
     parser = argparse.ArgumentParser(
         description="Manage full-screen captures and print selected shots on A4."
     )
@@ -3444,7 +3457,7 @@ def main() -> int:
         help="action to perform (default: capture)",
     )
     action = parser.parse_args().action
-    return {
+    actions = {
         "capture": capture,
         "ui": run_ui,
         "print-latest": print_latest,
@@ -3452,8 +3465,13 @@ def main() -> int:
         "status": status,
         "setup-shortcut": setup_shortcut,
         "remove-shortcut": remove_shortcut,
-        "get-chrome-shortcut": print_chrome_shortcut,
-    }[action]()
+        "get-chrome-shortcut": write_chrome_shortcut_protocol,
+    }
+    try:
+        return actions[action]()
+    except Exception:
+        LOGGER.exception("Notesheet action %r failed", action)
+        return 1
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import struct
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from pathlib import Path
 
 MAX_MESSAGE_SIZE = 1024 * 1024
 NOTESHEET_SCRIPT = Path(__file__).resolve().parents[1] / "notesheet.py"
+LOGGER = logging.getLogger(__name__)
 
 
 def read_exact(size: int) -> bytes | None:
@@ -50,6 +52,11 @@ def write_message(message: dict) -> None:
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s: %(message)s",
+        stream=sys.stderr,
+    )
     try:
         request = read_message()
         if request is None:
@@ -70,6 +77,7 @@ def main() -> int:
             write_message({"ok": True, "binding": result.stdout.strip()})
             return 0
         if action != "capture":
+            LOGGER.warning("Rejected unsupported Native Messaging action: %r", action)
             write_message({"ok": False, "error": "Unsupported action."})
             return 0
         if not NOTESHEET_SCRIPT.is_file():
@@ -84,6 +92,7 @@ def main() -> int:
         write_message({"ok": result.returncode == 0})
         return 0
     except Exception as exc:
+        LOGGER.exception("Native Messaging request failed")
         write_message({"ok": False, "error": str(exc)})
         return 0
 

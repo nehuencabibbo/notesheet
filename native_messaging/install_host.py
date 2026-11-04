@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
+import sys
 from pathlib import Path
 
 
 HOST_NAME = "com.notesheet.capture"
 EXTENSION_ID_PATTERN = re.compile(r"[a-p]{32}")
+LOGGER = logging.getLogger(__name__)
 
 
 def host_manifest_directory(browser: str) -> Path:
@@ -22,6 +25,11 @@ def host_manifest_directory(browser: str) -> Path:
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s: %(message)s",
+        stream=sys.stderr,
+    )
     parser = argparse.ArgumentParser(
         description="Register Notesheet's Native Messaging host for Chrome or Chromium."
     )
@@ -34,20 +42,24 @@ def main() -> int:
 
     host_script = Path(__file__).resolve().with_name("notesheet_capture_host.py")
     manifest_directory = host_manifest_directory(args.browser)
-    manifest_directory.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_directory / f"{HOST_NAME}.json"
-    manifest = {
-        "name": HOST_NAME,
-        "description": "Capture the screen with Notesheet",
-        "path": str(host_script),
-        "type": "stdio",
-        "allowed_origins": [f"chrome-extension://{args.extension_id}/"],
-    }
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    print(f"Registered Notesheet Native Messaging host: {manifest_path}")
+    try:
+        manifest_directory.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "name": HOST_NAME,
+            "description": "Capture the screen with Notesheet",
+            "path": str(host_script),
+            "type": "stdio",
+            "allowed_origins": [f"chrome-extension://{args.extension_id}/"],
+        }
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        LOGGER.exception("Could not register the Native Messaging host")
+        return 1
+    LOGGER.info("Registered Notesheet Native Messaging host: %s", manifest_path)
     return 0
 
 
