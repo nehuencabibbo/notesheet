@@ -44,9 +44,9 @@ The current shortcut appears in bold in the toolbar. Use **Change…** to choose
 
 Each capture opens a save dialog where you can choose a folder or create one. Enter an optional name, or leave it blank to use `screen-YYYYMMDD-HHMMSS-microseconds.png`. **Cancel capture** discards the screenshot. The saved confirmation uses urgent notification priority so GNOME can show it over fullscreen video.
 
-## Chrome capture shortcut for Hotmart
+## Chrome capture shortcut for Cantrill courses
 
-The optional Chrome extension hides Hotmart’s player overlay, starts Notesheet’s capture flow through Native Messaging, and restores the overlay after the capture dialog closes. It targets the Hotmart player shown in the page DOM and does not affect other video players.
+The optional Chrome extension works across lecture URLs on `learn.cantrill.io`. It hides the embedded player controls, starts Notesheet’s capture flow through Native Messaging, and restores the controls after the capture dialog closes. The course page embeds its player from `player.hotmart.com`, so the extension requests access only to the course site and that player frame.
 
 1. Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select the repository’s `chrome_extension` folder.
 2. Copy the extension ID displayed on its card.
@@ -57,9 +57,9 @@ The optional Chrome extension hides Hotmart’s player overlay, starts Notesheet
    ```
 
    For Chromium, use `chromium` instead of `chrome`.
-4. In Notesheet, use **Change Chrome…** to choose a shortcut preset or record a custom shortcut. Presets include **Ctrl+Shift+Y**, **Ctrl+Shift+K**, **Alt+Shift+Y**, **Ctrl+Shift+Comma**, and **Ctrl+Shift+Period**. Reload the Hotmart tab after loading the extension and whenever you change the shortcut.
+4. In Notesheet, use **Change Chrome…** to choose a shortcut preset or record a custom shortcut. Presets include **Ctrl+Shift+Y**, **Ctrl+Shift+K**, **Alt+Shift+Y**, **Ctrl+Shift+Comma**, and **Ctrl+Shift+Period**. Reload the Cantrill lecture tab after loading or reloading the extension, granting its site access, and whenever you change the shortcut.
 
-Chrome does not let Notesheet change an extension command through its API. Instead, the extension reads this app setting and listens for the shortcut only on a focused Hotmart tab; Chrome must be open on that tab, and the shortcut is not global. For compatibility with Chrome shortcuts, the app accepts letters, numbers, comma, period, navigation keys, and media keys. Regular keys require **Ctrl** or **Alt**; **Shift** is optional; **Ctrl+Alt** is not accepted. Media keys are used alone. Chrome or Ubuntu can reserve some key combinations, in which case the page will not receive them. `Super+Print` remains available for Notesheet’s separate GNOME capture shortcut.
+Chrome does not let Notesheet change an extension command through its API. Instead, the extension reads this app setting and listens for the shortcut on a focused Cantrill lecture tab; the shortcut is not global. For compatibility with Chrome shortcuts, the app accepts letters, numbers, comma, period, navigation keys, and media keys. Regular keys require **Ctrl** or **Alt**; **Shift** is optional; **Ctrl+Alt** is not accepted. Media keys are used alone. Chrome or Ubuntu can reserve some key combinations, in which case the page will not receive them. `Super+Print` remains available for Notesheet’s separate GNOME capture shortcut.
 
 The Native Messaging host is registered only for this extension ID and accepts only the capture request or a request to read the saved Chrome shortcut.
 

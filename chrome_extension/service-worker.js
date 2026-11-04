@@ -1,25 +1,28 @@
 const NATIVE_HOST = "com.notesheet.capture";
+const ALLOWED_HOSTS = new Set(["learn.cantrill.io", "player.hotmart.com"]);
 
-function isHotmartUrl(value) {
+function isAllowedPageUrl(value) {
   try {
     const url = new URL(value);
-    return url.protocol === "https:" &&
-      (url.hostname === "hotmart.com" || url.hostname.endsWith(".hotmart.com"));
+    return url.protocol === "https:" && ALLOWED_HOSTS.has(url.hostname);
   } catch {
     return false;
   }
 }
 
-function isHotmartContentScript(sender) {
-  return Boolean(sender.tab?.id !== undefined && isHotmartUrl(sender.url));
+function isAllowedContentScript(sender) {
+  return Boolean(
+    sender.tab?.id !== undefined &&
+    [sender.url, sender.origin, sender.tab.url].some(isAllowedPageUrl)
+  );
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type !== "get-shortcut" && message?.type !== "capture-hotmart") {
+  if (message?.type !== "get-shortcut" && message?.type !== "capture-course") {
     return false;
   }
-  if (!isHotmartContentScript(sender)) {
-    sendResponse({ ok: false, error: "Request is not from a Hotmart page." });
+  if (!isAllowedContentScript(sender)) {
+    sendResponse({ ok: false, error: "Request is not from an allowed course or player page." });
     return false;
   }
 

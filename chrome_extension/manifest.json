@@ -1,14 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "Notesheet Hotmart Capture",
-  "version": "1.0.0",
-  "description": "Hide Hotmart video controls before capturing with Notesheet.",
+  "name": "Notesheet Cantrill Capture",
+  "version": "1.1.0",
+  "description": "Hide the embedded video controls on learn.cantrill.io before capturing with Notesheet.",
   "permissions": [
     "nativeMessaging"
   ],
   "host_permissions": [
-    "https://hotmart.com/*",
-    "https://*.hotmart.com/*"
+    "https://learn.cantrill.io/*",
+    "https://player.hotmart.com/*"
   ],
   "background": {
     "service_worker": "service-worker.js"
@@ -16,10 +16,10 @@
   "content_scripts": [
     {
       "matches": [
-        "https://hotmart.com/*",
-        "https://*.hotmart.com/*"
+        "https://learn.cantrill.io/*",
+        "https://player.hotmart.com/*"
       ],
-      "js": ["hotmart-capture.js"],
+      "js": ["cantrill-capture.js"],
       "run_at": "document_idle",
       "all_frames": true
     }

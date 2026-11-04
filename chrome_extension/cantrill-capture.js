@@ -1,4 +1,4 @@
-const HIDE_STYLE_ID = "notesheet-hide-hotmart-controls";
+const HIDE_STYLE_ID = "notesheet-hide-course-controls";
 const OVERLAY_SELECTOR = '[data-vjs-player="true"] [data-testid="active-overlay"]';
 let configuredShortcut = null;
 let captureInProgress = false;
@@ -83,12 +83,12 @@ async function captureWithOverlayHidden(event) {
 
   try {
     await nextPaint();
-    const response = await chrome.runtime.sendMessage({ type: "capture-hotmart" });
+    const response = await chrome.runtime.sendMessage({ type: "capture-course" });
     if (!response?.ok) {
       throw new Error(response?.error || "Notesheet capture failed.");
     }
   } catch (error) {
-    console.error("Notesheet Hotmart capture failed:", error);
+    console.error("Notesheet course capture failed:", error);
   } finally {
     style.remove();
     captureInProgress = false;
